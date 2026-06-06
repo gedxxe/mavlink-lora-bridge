@@ -41,7 +41,7 @@ void sendGpsRawFromBeacon(uint8_t sysid, uint8_t compid, const PixhawkDataBeacon
 void sendSysStatusFromData(uint8_t sysid, uint8_t compid, uint16_t voltage_battery, int16_t current_battery, int8_t battery_remaining);
 void sendVfrHudFromData(uint8_t sysid, uint8_t compid, float airspeed, float groundspeed, int16_t heading, uint16_t throttle, float climb);
 void sendEkfStatusFromData(uint8_t sysid, uint8_t compid, uint16_t ekf_flags);
-void sendMavlinkMessageToMissionPlanner(const mavlink_message_t &msg);
+void sendMavlinkMessageToMissionPlanner(mavlink_message_t &msg);
 void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid);
 
 // Math conversion helpers on GCS side

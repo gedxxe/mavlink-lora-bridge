@@ -833,7 +833,7 @@ unsigned long lowRawIntervalForSF(int sf) {
   return 500UL;
 }
 
-unsigned long ackTimeoutForSF(int sf) {
+unsigned long ackTimeoutForSF(uint8_t sf) {
   if (sf <= 7) return 250UL; if (sf == 8) return 350UL; if (sf == 9) return 500UL;
   if (sf == 10) return 700UL; if (sf == 11) return 950UL;
   // SF12 beacon is long; a 1300 ms RX wait after telemetry starves the next beacon
