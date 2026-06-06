@@ -891,66 +891,14 @@ int rfQualityPercentFromRssiSnr() {
   return constrain((snrPct * 60 + rssiPct * 40) / 100, 0, 100);
 }
 
-void applyRadioSettings(uint8_t sf, uint8_t tp) {
-  if (sf < SF_MIN) sf = SF_MIN;
-  if (sf > SF_MAX) sf = SF_MAX;
-  if (tp < TP_MIN) tp = TP_MIN;
-  if (tp > TP_MAX) tp = TP_MAX;
-
-  activeSF = sf;
-  activeTP = tp;
-
-  radio.standby(); delay(1);
-  radio.setBandwidth(LORA_BW_KHZ);
-  radio.setSpreadingFactor(activeSF);
-  radio.setOutputPower(activeTP);
-  radio.standby();
-
-  MetricsSerial.print("[RADIO GCS] Applied SF=");
-  MetricsSerial.print(activeSF);
-  MetricsSerial.print(" TP=");
-  MetricsSerial.println(activeTP);
-}
-
-void applyRadioSettings(uint8_t sf) {
-  applyRadioSettings(sf, activeTP);
-}
-
-void softRecoverRadio() {
-  radio.standby(); delay(2);
-  radio.sleep(); delay(10);
-  applyRadioSettings(activeSF);
-}
+#include "GCSRadioHelpers.h"
 
 uint16_t telemetryPayloadBytesForType(uint8_t pktType) {
   if (pktType == PKT_TELEM_BEACON) return sizeof(PixhawkDataBeacon);
   return 0;
 }
 
-bool calibrationConfigModeActive() { return calConfigActive && millis() < calConfigUntilMs; }
-
-void startCalibrationConfigMode() {
-  calConfigActive = true;
-  calConfigUntilMs = millis() + CAL_CONFIG_HOLD_MS;
-  paramModeHoldUntilMs = millis() + PARAM_MODE_HOLD_MS;
-  linkMode = LINK_MODE_CALIBRATION;
-}
-
-void stopCalibrationConfigMode() {
-  calConfigActive = false;
-  calConfigUntilMs = 0;
-  if (!paramSyncActive && millis() > paramModeHoldUntilMs) linkMode = LINK_MODE_NORMAL;
-}
-
-void updateCalibrationConfigMode() {
-  if (!calConfigActive) return;
-  if (millis() <= calConfigUntilMs) return;
-  stopCalibrationConfigMode();
-}
-
-bool fastOperationalModeActive() {
-  return paramSyncActive || calibrationConfigModeActive() || millis() < paramModeHoldUntilMs || linkMode == LINK_MODE_PARAM_SYNC || linkMode == LINK_MODE_CALIBRATION;
-}
+#include "GCCalibHelpers.h"
 
 void printMetricsHeader() {
   MetricsSerial.println(
@@ -1492,108 +1440,7 @@ uint8_t repeatCountForGCSMessage(const mavlink_message_t &msg) {
 
 void flushLowCommandQueue() { rawLowHead = 0; rawLowTail = 0; rawLowCount = 0; }
 void flushHighCommandQueue() { rawHighHead = 0; rawHighTail = 0; rawHighCount = 0; }
-void flushCompactCommandQueue() { compactCmdHead = 0; compactCmdTail = 0; compactCmdCount = 0; }
-void sendLocalStatustextToMissionPlanner(const char *text, uint8_t severity = MAV_SEVERITY_WARNING);
-void sendBridgeEvent(uint8_t severity, const char *text, unsigned long minIntervalMs);
-void sendProxyCommandAckToMissionPlanner(uint16_t command);
-void serviceProxyCommandAckBurst();
-void sendOptimisticSetModeHeartbeatToMissionPlanner(const mavlink_message_t &msg);
-void sendOptimisticCommandLongModeHeartbeatToMissionPlanner(const mavlink_message_t &msg);
-
-
-int32_t compactScale1000(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1000 + (v >= 0 ? 0.5f : -0.5f)); }
-int32_t compactScale1e7(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1E7 + (v >= 0 ? 0.5f : -0.5f)); }
-float compactFromX1000(int32_t v) { return ((float)v) / COMPACT_CMD_SCALE_1000; }
-
-bool enqueueCompactPacket(const void *packet, uint8_t len, uint16_t command) {
-  if (len == 0 || len > COMPACT_CMD_MAX_LEN) { compactCmdDrop++; commandDrop++; return false; }
-  if (compactCmdCount >= COMPACT_CMD_QUEUE_SIZE) {
-    compactCmdTail = (compactCmdTail + 1) % COMPACT_CMD_QUEUE_SIZE;
-    compactCmdCount--; compactCmdDrop++;
-  }
-  CompactCommandQueueItem &item = compactCmdQueue[compactCmdHead];
-  memset(&item, 0, sizeof(item));
-  item.len = len;
-  item.command = command;
-  memcpy(item.payload, packet, len);
-  compactCmdHead = (compactCmdHead + 1) % COMPACT_CMD_QUEUE_SIZE;
-  compactCmdCount++; compactCmdQueuedCount++;
-  return true;
-}
-
-bool peekCompactCommandPacket(CompactCommandQueueItem &item) {
-  if (compactCmdCount == 0) return false;
-  item = compactCmdQueue[compactCmdTail];
-  return true;
-}
-
-void popCompactCommandPacket() {
-  if (compactCmdCount == 0) return;
-  compactCmdTail = (compactCmdTail + 1) % COMPACT_CMD_QUEUE_SIZE;
-  compactCmdCount--;
-}
-
-bool shouldUseCompactCommandForMessage(const mavlink_message_t &msg) {
-  // V28 static fix: keep telemetry payload/interval unchanged, but use compact
-  // packets for flight-action commands from SF8 upward to avoid raw MAVLink
-  // command timeouts/crashes at SF8-SF12.
-  if (activeSF < 8) return false;
-  if (!isFlightActionGCSMessage(msg)) return false;
-  return msg.msgid == MAVLINK_MSG_ID_SET_MODE || msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG;
-}
-
-bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck) {
-  if (!shouldUseCompactCommandForMessage(msg)) return false;
-  if (msg.msgid == MAVLINK_MSG_ID_SET_MODE) {
-    mavlink_set_mode_t sm; mavlink_msg_set_mode_decode(&msg, &sm);
-    CompactSetModePacket pkt = {};
-    initHeader(pkt.hdr, PKT_CMD_COMPACT);
-    pkt.seq = ++compactCmdSeq;
-    pkt.kind = COMPACT_CMD_KIND_SET_MODE;
-    pkt.target_system = sm.target_system;
-    pkt.base_mode = sm.base_mode;
-    pkt.custom_mode = sm.custom_mode;
-    finalizePacketCrc(&pkt, sizeof(pkt));
-    return enqueueCompactPacket(&pkt, sizeof(pkt), commandIdForAck ? commandIdForAck : CMD_DO_SET_MODE);
-  }
-
-  if (msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
-    mavlink_command_long_t cmd; mavlink_msg_command_long_decode(&msg, &cmd);
-    uint16_t command = (uint16_t)cmd.command;
-    if (command == CMD_COMPONENT_ARM_DISARM) {
-      CompactArmDisarmPacket pkt = {};
-      initHeader(pkt.hdr, PKT_CMD_COMPACT);
-      pkt.seq = ++compactCmdSeq;
-      pkt.kind = COMPACT_CMD_KIND_ARM_DISARM;
-      pkt.target_system = cmd.target_system;
-      pkt.target_component = cmd.target_component;
-      pkt.arm = (cmd.param1 >= 0.5f) ? 1 : 0;
-      pkt.param2_x1000 = compactScale1000(cmd.param2);
-      finalizePacketCrc(&pkt, sizeof(pkt));
-      return enqueueCompactPacket(&pkt, sizeof(pkt), command);
-    }
-    if (isFlightActionCommandId(command)) {
-      CompactCommandLongPacket pkt = {};
-      initHeader(pkt.hdr, PKT_CMD_COMPACT);
-      pkt.seq = ++compactCmdSeq;
-      pkt.kind = COMPACT_CMD_KIND_COMMAND_LONG;
-      pkt.command = command;
-      pkt.target_system = cmd.target_system;
-      pkt.target_component = cmd.target_component;
-      pkt.confirmation = cmd.confirmation;
-      pkt.p1_x1000 = compactScale1000(cmd.param1);
-      pkt.p2_x1000 = compactScale1000(cmd.param2);
-      pkt.p3_x1000 = compactScale1000(cmd.param3);
-      pkt.p4_x1000 = compactScale1000(cmd.param4);
-      pkt.p5_x1e7 = compactScale1e7(cmd.param5);
-      pkt.p6_x1e7 = compactScale1e7(cmd.param6);
-      pkt.p7_x1000 = compactScale1000(cmd.param7);
-      finalizePacketCrc(&pkt, sizeof(pkt));
-      return enqueueCompactPacket(&pkt, sizeof(pkt), command);
-    }
-  }
-  return false;
-}
+#include "GCSCommandQueue.h"
 
 bool enqueueHighRawPacket(const uint8_t *data, uint8_t len) {
   if (len == 0 || len > RAW_MAVLINK_MAX) { commandDrop++; return false; }

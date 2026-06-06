@@ -592,57 +592,10 @@ bool isInteractiveSetupParamId(const char *id) {
   return false;
 }
 
-static inline float estimateLoRaToA_ms(uint8_t sf, float bwHz, uint8_t crDen, uint16_t payloadBytes) {
-  return estimateLoRaToA_ms(sf, bwHz, crDen, payloadBytes, LORA_PREAMBLE_SYMBOLS);
-}
-
-static inline float estimatePacketEnergy_mJ(uint8_t tpDbm, float toaMs) {
-  return estimatePacketEnergy_mJ(tpDbm, toaMs, METRICS_SUPPLY_VOLTAGE);
-}
-
-void applyRadioSettings(uint8_t sf, uint8_t tp) {
-  radio.standby(); delay(1);
-  radio.setBandwidth(LORA_BW_KHZ);
-  radio.setSpreadingFactor(sf);
-  radio.setOutputPower(tp);
-  radio.standby();
-  Serial.print("[RADIO UAV] Applied SF=");
-  Serial.print(sf);
-  Serial.print(" TP=");
-  Serial.println(tp);
-}
+#include "UAVRadioHelpers.h"
 
 void flushLowQueue() { lowHead = lowTail = lowCount = 0; }
 void flushParamBulkQueue() { paramBulkHead = paramBulkTail = paramBulkCount = 0; }
-
-void hardResetLoRaUAV() {
-  pinMode(LORA_RST, OUTPUT);
-  digitalWrite(LORA_RST, LOW);
-  delay(25);
-  digitalWrite(LORA_RST, HIGH);
-  delay(120);
-}
-
-bool initLoRaRadioUAV() {
-  for (uint8_t i = 0; i < LORA_INIT_RETRY_COUNT; i++) {
-    hardResetLoRaUAV();
-    delay(LORA_INIT_RETRY_DELAY_MS);
-    int16_t state = radio.begin(FREQ_MHZ, LORA_BW_KHZ, currentSF, LORA_CR_DEN, LORA_SYNC, currentTP);
-    Serial.print("[BOOT UAV] LoRa init attempt ");
-    Serial.print(i + 1);
-    Serial.print(" state=");
-    Serial.println(state);
-    if (state == RADIOLIB_ERR_NONE) {
-      radio.explicitHeader();
-      radio.setCRC(true);
-      applyRadioSettings(currentSF, currentTP);
-      loraInitRetrySuccessCount++;
-      return true;
-    }
-    delay(50);
-  }
-  return false;
-}
 
 void initPixhawkSerialPort() {
   PixhawkSerial.end();
@@ -673,14 +626,6 @@ void recoverPixhawkSerialIfSilent() {
   streamConfigRetry = 1;
   streamConfigRetryCount++;
 #endif
-}
-
-void softRecoverRadio(bool flushLow) {
-  radio.standby(); delay(2); radio.sleep(); delay(10);
-  applyRadioSettings(currentSF, currentTP);
-  if (flushLow && !paramSyncActive && lowCount > 16) flushLowQueue();
-  lastRadioRecoveryMs = millis();
-  radioSoftRecoveryCount++;
 }
 
 void proposeConfig(uint8_t nextSF, uint8_t nextTP);
@@ -1078,80 +1023,7 @@ bool enqueueMavlinkLowForGCSBundled(const mavlink_message_t &msg) {
   oversizedMavlinkDrop++; lowQueueDrop++; return false;
 }
 
-bool peekParamBulkPacket(ParamBulkPacket &pkt) {
-  if (paramBulkCount == 0) return false;
-  pkt = paramBulkQueue[paramBulkTail];
-  return true;
-}
-
-void popParamBulkPacket() {
-  if (paramBulkCount == 0) return;
-  paramBulkTail = (paramBulkTail + 1) % PARAM_BULK_QUEUE_SIZE;
-  paramBulkCount--;
-}
-
-bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid) {
-  if (paramBulkCount >= PARAM_BULK_QUEUE_SIZE) {
-    flushLowQueue();
-  }
-  if (paramBulkCount >= PARAM_BULK_QUEUE_SIZE) {
-    paramBulkQueueDrop++;
-    paramValueDrop++;
-    return false;
-  }
-  ParamBulkPacket &pkt = paramBulkQueue[paramBulkHead];
-  memset(&pkt, 0, sizeof(pkt));
-  initHeader(pkt.hdr, PKT_PARAM_BULK);
-  pkt.count = 0;
-  pkt.sysid = sysid;
-  pkt.compid = compid;
-  pkt.reserved = 0;
-  finalizePacketCrc(&pkt, PARAM_BULK_LEN(0));
-  paramBulkHead = (paramBulkHead + 1) % PARAM_BULK_QUEUE_SIZE;
-  paramBulkCount++;
-  return true;
-}
-
-uint8_t paramBulkRecordsLimitForCurrentSF() {
-  // V28 static fix: telemetry payload/interval stays unchanged; only PARAM_BULK
-  // is reduced on SF8/SF9 so Mission Planner param sync does not overload LoRa.
-  if (currentSF == 8) return 4;
-  if (currentSF == 9) return 3;
-  if (currentSF >= 10) return 0;
-  return PARAM_BULK_MAX_RECORDS;
-}
-
-bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
-  if (msg.msgid != MAVLINK_MSG_ID_PARAM_VALUE) return false;
-  mavlink_param_value_t pv;
-  mavlink_msg_param_value_decode(&msg, &pv);
-
-  uint8_t bulkLimit = paramBulkRecordsLimitForCurrentSF();
-  if (bulkLimit == 0) { paramValueDrop++; return false; }
-
-  if (paramBulkCount == 0) {
-    if (!startNewParamBulkPacket(msg.sysid, msg.compid)) return false;
-  }
-
-  uint16_t lastIndex = (paramBulkHead + PARAM_BULK_QUEUE_SIZE - 1) % PARAM_BULK_QUEUE_SIZE;
-  ParamBulkPacket *pkt = &paramBulkQueue[lastIndex];
-  if (pkt->count >= bulkLimit || pkt->sysid != msg.sysid || pkt->compid != msg.compid) {
-    if (!startNewParamBulkPacket(msg.sysid, msg.compid)) return false;
-    lastIndex = (paramBulkHead + PARAM_BULK_QUEUE_SIZE - 1) % PARAM_BULK_QUEUE_SIZE;
-    pkt = &paramBulkQueue[lastIndex];
-  }
-
-  CompactParamValue &r = pkt->rec[pkt->count];
-  r.param_value = pv.param_value;
-  r.param_count = pv.param_count;
-  r.param_index = pv.param_index;
-  memcpy(r.param_id, pv.param_id, 16);
-  r.param_type = pv.param_type;
-  pkt->count++;
-  finalizePacketCrc(pkt, PARAM_BULK_LEN(pkt->count));
-  paramBulkQueuedCount++;
-  return true;
-}
+#include "UAVParamQueue.h"
 bool isCriticalCalibrationFeedback(const mavlink_message_t &msg) {
   switch (msg.msgid) {
 #ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
@@ -1165,53 +1037,7 @@ bool isCriticalCalibrationFeedback(const mavlink_message_t &msg) {
 }
 
 
-#ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-void cacheMagCalProgressForGCS(const mavlink_message_t &msg) {
-  mavlink_mag_cal_progress_t p;
-  mavlink_msg_mag_cal_progress_decode(&msg, &p);
-  uint8_t id = p.compass_id;
-  if (id >= MAG_CAL_COMPASS_MAX) id = MAG_CAL_COMPASS_MAX - 1;
-  magCalProgressCache[id] = msg;
-  magCalProgressPending[id] = true;
-  magCalProgressCachedCount++;
-}
-
-bool hasPendingMagCalProgress() {
-  if (!calibrationConfigModeActive()) return false;
-  for (uint8_t i = 0; i < MAG_CAL_COMPASS_MAX; i++) {
-    if (magCalProgressPending[i]) return true;
-  }
-  return false;
-}
-
-bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *sentIds, uint8_t &sentCount) {
-  memset(&raw, 0, sizeof(raw));
-  initHeader(raw.hdr, PKT_MAVLINK_RAW);
-  raw.len = 0;
-  sentCount = 0;
-
-  for (uint8_t step = 0; step < MAG_CAL_COMPASS_MAX; step++) {
-    uint8_t id = (magCalProgressNextId + step) % MAG_CAL_COMPASS_MAX;
-    if (!magCalProgressPending[id]) continue;
-
-    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
-    uint16_t len = mavlink_msg_to_send_buffer(buf, &magCalProgressCache[id]);
-    if (len == 0 || len > RAW_MAVLINK_MAX) continue;
-    if ((uint16_t)raw.len + len > RAW_MAVLINK_MAX) {
-      if (sentCount > 0) break;
-      continue;
-    }
-
-    memcpy(&raw.payload[raw.len], buf, len);
-    raw.len += (uint8_t)len;
-    sentIds[sentCount++] = id;
-  }
-
-  if (sentCount == 0 || raw.len == 0) return false;
-  finalizePacketCrc(&raw, RAW_PKT_HEADER_LEN + raw.len);
-  return true;
-}
-#endif
+#include "UAVCalibHelpers.h"
 uint8_t getTargetSysId() { return (pixDataFull.system_id == 0) ? 1 : pixDataFull.system_id; }
 uint8_t getTargetCompId() { return (pixDataFull.component_id == 0) ? MAV_COMP_ID_AUTOPILOT1 : pixDataFull.component_id; }
 bool isPixhawkArmed() { return (pixDataFull.valid_flags & VALID_HEARTBEAT) && (pixDataFull.base_mode & MAV_MODE_FLAG_SAFETY_ARMED); }
@@ -2167,51 +1993,6 @@ bool sendRawPacketToGCS(bool highPriority) {
 }
 
 
-#ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-bool sendPendingMagCalProgressToGCS() {
-  if (!hasPendingMagCalProgress()) return false;
-  unsigned long now = millis();
-  if (now - lastMagCalProgressTxMs < MAG_CAL_PROGRESS_TX_INTERVAL_MS) return false;
-  lastMagCalProgressTxMs = now;
-
-  MavlinkRawPacket raw;
-  uint8_t sentIds[MAG_CAL_COMPASS_MAX];
-  uint8_t sentCount = 0;
-  if (!buildMagCalProgressRawPacket(raw, sentIds, sentCount)) return false;
-
-  uint16_t packetLen = RAW_PKT_HEADER_LEN + raw.len;
-  radio.standby();
-  radio.setBandwidth(LORA_BW_KHZ);
-  radio.setSpreadingFactor(currentSF);
-  radio.setOutputPower(currentTP);
-  int16_t txState = radio.transmit((uint8_t *)&raw, packetLen);
-  rawTxCount++;
-  magCalProgressBundleTxCount++;
-  if (txState != RADIOLIB_ERR_NONE) {
-    magCalProgressBundleFailCount++;
-    updateMSADR(false);
-    return true;
-  }
-
-  unsigned long t0 = millis();
-  bool ackOK = waitResponseFromGCS(ackTimeoutForSF(currentSF), counter, false);
-  unsigned long t1 = millis();
-  if (ackOK) {
-    for (uint8_t i = 0; i < sentCount; i++) {
-      magCalProgressPending[sentIds[i]] = false;
-    }
-    magCalProgressNextId = (sentIds[sentCount - 1] + 1) % MAG_CAL_COMPASS_MAX;
-    magCalProgressBundleAckCount++;
-  } else {
-    magCalProgressBundleFailCount++;
-  }
-
-  if (ackOK && t1 >= t0) lastLatency = (t1 - t0) / 2.0f; else lastLatency = 0.0f;
-  updateMSADR(ackOK);
-  lastAnyTx = millis();
-  return true;
-}
-#endif
 
 void applyConfig(uint8_t sf, uint8_t tp, uint8_t profile) {
   if (sf < SF_MIN) sf = SF_MIN; if (sf > SF_MAX) sf = SF_MAX;
