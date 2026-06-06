@@ -22,16 +22,16 @@ The codebase follows a modular partition between Ground Control Station (GCS) an
 
 ```
 mavlink-lora-bridge/
-├── GCS_V28_Static/
-│   ├── GCS_V28_Static.ino              (GCS entry point, 131 KB)
+├── GCS_Static/
+│   ├── GCS_Static.ino                  (GCS entry point, 131 KB)
 │   ├── TelemetryProtoFix.h             (Shared OTA wire format)
 │   ├── BeaconDecodeHelpers.h           (GCS: beacon→MAVLink reconstruction)
 │   ├── GCSRadioHelpers.h               (GCS: radio parameter init)
 │   ├── GCSCommandQueue.h               (GCS: command encoding queue)
 │   └── GCCalibHelpers.h                (GCS: calibration state tracking)
 │
-├── UAV_V28_Static/
-│   ├── UAV_V28_Static.ino              (UAV entry point, 93 KB)
+├── UAV_Static/
+│   ├── UAV_Static.ino                  (UAV entry point, 93 KB)
 │   ├── TelemetryProtoFix.h             (Shared OTA wire format)
 │   ├── BeaconFillHelpers.h             (UAV: MAVLink→beacon compression)
 │   ├── UAVRadioHelpers.h               (UAV: radio parameter init)
@@ -160,7 +160,7 @@ UAV Reception
 [BeaconDecodeHelpers: Command extraction and upscaling]
     Parameters: ×1000, ×1e7 applied to restore floats
     ↓
-[UAV_V28_Static: Command forwarding to Pixhawk]
+[UAV_Static: Command forwarding to Pixhawk]
     ↓
 Pixhawk/Ardupilot Flight Controller
     Executes command (arm, mode change, navigate)
@@ -697,14 +697,14 @@ Prevents lockup when Pixhawk firmware crashes or enters bootloader mode.
 
 Both sketches are compiled separately (one binary per vehicle type):
 
-1. **GCS_V28_Static.ino**
+1. **GCS_Static.ino**
    - Compiled with all GCS helper headers included
-   - Outputs `GCS_V28_Static.bin` (~130 KB)
+   - Outputs `GCS_Static.bin` (~130 KB)
    - Uploads to GCS ESP32 via USB/UART programmer
 
-2. **UAV_V28_Static.ino**
+2. **UAV_Static.ino**
    - Compiled with all UAV helper headers included
-   - Outputs `UAV_V28_Static.bin` (~93 KB)
+   - Outputs `UAV_Static.bin` (~93 KB)
    - Uploads to UAV ESP32 via USB/UART programmer
 
 ### Dependencies
@@ -781,8 +781,8 @@ Both sketches are compiled separately (one binary per vehicle type):
 - Multimeter (measure current for power budgeting)
 
 **Test Setup:**
-1. Program GCS ESP32 with GCS_V28_Static.ino
-2. Program UAV ESP32 with UAV_V28_Static.ino + connect Pixhawk UART
+1. Program GCS ESP32 with GCS_Static.ino
+2. Program UAV ESP32 with UAV_Static.ino + connect Pixhawk UART
 3. Both modules powered at 5V (ensure adequate current supply: ~150 mA peak TX)
 4. Launch Mission Planner on PC, connect to GCS ESP32 serial
 5. Verify telemetry stream arrives (~1–2 Hz beacon rate)
