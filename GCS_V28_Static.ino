@@ -1,9 +1,6 @@
 #include <SPI.h>
 #include "TelemetryProtoFix.h"
 #include "BeaconDecodeHelpers.h"
-#include "GCSRadioHelpers.h"
-#include "GCSCommandQueue.h"
-#include "GCCalibHelpers.h"
 #include <RadioLib.h>
 #include <MAVLink_ardupilotmega.h>
 #include <math.h>

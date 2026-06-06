@@ -6,9 +6,6 @@
 #include <EEPROM.h>
 #include <stddef.h>
 #include "TelemetryProtoFix.h"
-#include "UAVRadioHelpers.h"
-#include "UAVParamQueue.h"
-#include "UAVCalibHelpers.h"
 
 #ifndef RADIOLIB_ERR_UNKNOWN
 #define RADIOLIB_ERR_UNKNOWN -999
