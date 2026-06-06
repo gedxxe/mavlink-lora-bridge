@@ -113,8 +113,8 @@
 #endif
 
 // =====================================================
-// NODE GCS - OPTIMIZED MAVLINK-AWARE LORA BRIDGE - STATIS V18 PAYLOAD 78B MPCONNECT FIX
-// Hanya menerima payload beacon ringkas tetap untuk pengujian PHY LoRa
+// GROUND CONTROL STATION (GCS) NODE - OPTIMIZED MAVLINK-AWARE LORA TELEMETRY BRIDGE
+// Receive compact telemetry beacon packets from UAV and reconstruct MAVLink streams
 // =====================================================
 
 // ================= Link Mode =================
@@ -150,12 +150,13 @@ uint32_t commandAckSuppressedCount = 0;
 bool isArmDisarmCommandId(uint16_t command);
 bool shouldForwardArmAckToMissionPlanner(const mavlink_command_ack_t &ack);
 
-// High-SF command UX guard: pada SF11/SF12 ACK asli dari flight controller bisa terlambat
-// karena half-duplex LoRa. Untuk action command non-ARM, GCS dapat memberi ACK proxy
-// ke Mission Planner setelah command berhasil dipancarkan pada slot downlink.
+// High Spreading Factor command UX guard: At high SFs (SF11/SF12), the actual COMMAND_ACK from the
+// flight controller can be delayed due to the half-duplex nature of the LoRa link. For non-ARMing
+// action commands, GCS can proxy the ACK to Mission Planner once the command is successfully
+// transmitted on the downlink slot to prevent timeouts.
 #define COMMAND_PROXY_ACK_HIGH_SF_ENABLE 0
 #define COMMAND_PROXY_ACK_MIN_SF 10
-#define COMMAND_PROXY_ACK_ARM_ENABLE 0  // V14 delay/force fix: ARM must wait for real FC ACK so Mission Planner can show Force Arm on DENIED.
+#define COMMAND_PROXY_ACK_ARM_ENABLE 0  // ARM commands must wait for the actual flight controller ACK so Mission Planner can correctly handle FORCE ARM or DENIED states.
 #define COMMAND_PROXY_ACK_SUPPRESS_MS 30000UL
 #define COMMAND_PROXY_ACK_ON_ENQUEUE_ENABLE 0
 #define COMMAND_PROXY_ACK_BURST_COUNT 3
@@ -168,7 +169,7 @@ uint16_t proxyAckBurstCommand = 0;
 uint8_t proxyAckBurstRemaining = 0;
 unsigned long proxyAckBurstNextMs = 0;
 
-// V15 low-delay UI feedback:
+// Low-delay UI feedback for flight actions:
 // SET_MODE/DO_SET_MODE can be visually delayed in Mission Planner because the real
 // HEARTBEAT/custom_mode returns through a slow half-duplex LoRa path. Keep a temporary
 // optimistic heartbeat overlay for SF10-SF12. This is only UI feedback; real beacon
@@ -212,7 +213,7 @@ uint32_t calStatustextRxCount = 0;
 #define BLOCK_FULL_PARAM_SYNC_HIGH_SF 1
 #define FULL_PARAM_SYNC_MAX_SF 9
 #define HIGH_SF_PARAM_NOTICE_INTERVAL_MS 5000UL
-// V15 3FIX: SF10-SF12 are command/monitoring links, not full Mission Planner parameter-sync links.
+// Spreading factors SF10-SF12 are optimized for command and telemetry monitoring, not for full parameter synchronization.
 // Block full-list requests and non-interactive PARAM_REQUEST_READ at high SF.
 #define BLOCK_PARAM_READ_HIGH_SF 1
 #define LORA_PARAM_NOTICE_MIN_INTERVAL_MS 3000UL
@@ -258,26 +259,69 @@ uint32_t paramReadBlockedHighSfCount = 0;
 
 // Protocol constants moved to TelemetryProtoFix.h
 
-// ================= LoRa =================
-#define LORA_SS    5
-#define LORA_RST   25
-#define LORA_DIO0  26
-#define LORA_DIO1  RADIOLIB_NC
+// =============================================================================
+// LORA PHYSICAL LAYER TUNABLE PARAMETERS (GCS SIDE)
+// =============================================================================
 
+// LoRa Hardware SPI Pin Connections
+#define LORA_SS    5                  // SPI Slave Select pin
+#define LORA_RST   25                 // Radio reset pin
+#define LORA_DIO0  26                 // Digital I/O 0 pin (packet RX/TX interrupts)
+#define LORA_DIO1  RADIOLIB_NC        // Digital I/O 1 pin (Not Connected)
+
+// LoRa RF Channel Configuration
+// [Tuning Guideline] Must match exactly between GCS and UAV nodes.
+// Range: 410.0 MHz to 525.0 MHz (for 433 MHz modules) or 860.0 MHz to 930.0 MHz (for 915 MHz modules).
+// Impact: Changing the frequency helps avoid local RF interference or align with legal ISM band standards in your region.
 #define FREQ_MHZ      433.0
-#define LORA_BW_KHZ   500.0          // BW 500 kHz
+
+// LoRa Bandwidth (kHz)
+// [Tuning Guideline] Higher bandwidth enables higher data transmission rate (less airtime/latency), 
+// but decreases receiver sensitivity and reduces overall range (link budget).
+// Options: 125.0, 250.0, 500.0. Recommended default: 500.0 kHz for high throughput.
+#define LORA_BW_KHZ   500.0
+
+// LoRa Coding Rate Denominator
+// [Tuning Guideline] Code rate is 4/(LORA_CR_DEN). Options: 5 (CR 4/5), 6 (CR 4/6), 7 (CR 4/7), 8 (CR 4/8).
+// Impact: Higher CR denominator increases error-correction redundancy (better link robustness in noise), 
+// but increases packet airtime and latency.
 #define LORA_CR_DEN   8
+
+// LoRa Sync Word
+// [Tuning Guideline] Must match between GCS and UAV. Range: 0x00 to 0xFF.
+// Impact: Isolates your network. Only transceivers with the matching sync word can decode each other's packets.
 #define LORA_SYNC     0x12
 
+// Spreading Factor Boundaries
+// [Tuning Guideline] Spreading Factor range. Min: 7, Max: 12.
+// Impact: Higher Spreading Factors increase receiver sensitivity and double the range per step, 
+// but exponentially increase packet airtime. At SF12, update rate drops to ~1 Hz.
 #define SF_MIN 7
 #define SF_MAX 12
-#define DEFAULT_SF 7   // Hanya SF awal scan; GCS akan auto-scan dan lock ke SF UAV
-#define UAV_MASTER_PHY_MODE 1       // 1 = UAV master PHY; GCS scan SF7..SF12 saat belum lock
-#define PHY_TEST_LOCK_INITIAL_SF 0  // 0 = auto-scan; tidak perlu samakan DEFAULT_SF GCS dengan UAV
+
+// Initial Scanning Spreading Factor
+// [Tuning Guideline] Range: SF_MIN to SF_MAX. GCS will scan and lock to the active UAV Spreading Factor.
+#define DEFAULT_SF 7
+
+// UAV Master Physical Layer Mode
+// [Tuning Guideline] 1 = GCS auto-scans spreading factors until it receives a valid packet and locks.
+// 0 = GCS stays locked on DEFAULT_SF. Recommended: 1 (keeps bridge connection resilient to UAV settings changes).
+#define UAV_MASTER_PHY_MODE 1
+
+// Forced Initial Spreading Factor lock
+// [Tuning Guideline] 0 = Auto-scan spreading factors at boot. 1 = Force lock to GCS DEFAULT_SF.
+#define PHY_TEST_LOCK_INITIAL_SF 0
+
+// GCS Transmit Power Configurations
+// [Tuning Guideline] Range: 10 to 16 dBm (depending on hardware limit).
+// Impact: Higher transmit power improves signal strength at the UAV receiver, but increases GCS power consumption.
 #define GCS_FIXED_TP 16
 #define TP_MIN 10
 #define TP_MAX 16
-#define GCS_DEFAULT_TP GCS_FIXED_TP   // TP awal GCS; setelah lock, GCS mengikuti TP yang diumumkan UAV
+
+// Initial Transmit Power
+// [Tuning Guideline] Initial transmit power for GCS. Will auto-adjust to match the UAV's power once locked.
+#define GCS_DEFAULT_TP GCS_FIXED_TP
 
 #define RX_TIMEOUT_MS            1000UL  // fallback; loop memakai rxTimeoutForSF()
 #define LINK_IDLE_SCAN_AFTER_MS  2500UL  // fallback; recovery memakai linkIdleScanAfterForSF()
@@ -321,41 +365,40 @@ uint32_t paramReadBlockedHighSfCount = 0;
 #define LORA_INIT_RETRY_DELAY_MS 250
 
 // ================= Boot / Autostart Recovery =================
-// Surgical fix: membuat node GCS pulih sendiri setelah power-on tanpa tombol reset manual.
-// Tidak mengubah LoRa PHY, identity MAVLink, payload, atau queue logic.
+// Auto-recovery: enables GCS node to automatically recover and re-initialize after power-on or lockups
+// without requiring a manual hardware reset button press. Does not modify LoRa PHY, MAVLink identities, payloads, or queue logic.
 #define BOOT_STABILIZE_MS                 1500UL
 #define GCS_LORA_INIT_FAIL_RESTART_MS     2000UL
 #define GCS_LORA_NO_PACKET_RECOVERY_MS    30000UL
 #define GCS_LORA_HARD_RECOVERY_MIN_GAP_MS 15000UL
 
 // ================= MAVLink forwarding =================
-// Raw MAVLink dari UAV tidak di-rate-limit global agar PARAM_VALUE/kalibrasi tidak hilang setelah ACK.
+// Raw MAVLink packets from UAV are not rate-limited globally to prevent parameter values or calibration packets from being lost after acknowledgement.
 
-// ================= Variabel untuk kualitas link =================
+// ================= Variables for Link Quality and Metrics =================
 float lastRssi = -120.0f;
 float lastSnr = 0.0f;
 unsigned long lastRadioStatusMs = 0;
 #define RADIO_STATUS_INTERVAL_MS 500
 #define MP_SIGNAL_MIN_LIVE_PCT 5
-// Jangan kirim RADIO_STATUS ganda dengan compid autopilot + telemetry radio.
-// Dual-compid bisa membuat Mission Planner melihat gap sequence per komponen.
+// Avoid sending duplicate RADIO_STATUS messages with both autopilot and telemetry radio component IDs.
+// Dual component IDs may cause Mission Planner to detect false packet sequence gaps.
 #define RADIO_STATUS_COMPAT_DUAL_COMPID 0
 
 // MPCONNECT FIX:
 // Sequence normalizer versi sebelumnya mengubah msg.seq SETELAH mavlink encode/finalize.
-// Pada MAVLink2, perubahan header setelah finalize dapat membuat CRC/checksum tidak cocok,
-// sehingga Mission Planner menolak HEARTBEAT dan koneksi gagal.
-// Karena itu normalizer dinonaktifkan. Pesan tetap dikirim dengan sequence legal dari MAVLink library.
+// Modifying the header after finalization in MAVLink2 can cause checksum mismatches,
+// causing Mission Planner to reject HEARTBEAT packets and break the connection.
+// Thus, post-encode sequence normalization is disabled; standard sequence counters are used.
 #define MP_MAVLINK_SEQ_NORMALIZER_ENABLE 0
 #define RADIO_STATUS_LEGACY_RADIO_ENABLE 0
 // MPQUALITY FIX:
-// RADIO_STATUS memakai component MAV_COMP_ID_TELEMETRY_RADIO, tetapi harus memiliki
-// sequence MAVLink sendiri yang valid sebelum checksum dibuat. Karena itu radio-status
-// dikemas dengan *_encode_chan() pada channel khusus, bukan dengan normalizer pasca-encode.
-#define MP_RADIO_STATUS_DEDICATED_CHAN_ENABLE 0  // CompileSafe: encode_chan tidak tersedia di sebagian MAVLink Arduino; pakai encode standar agar compile bersih
+// RADIO_STATUS uses the telemetry radio component ID, but needs its own separate sequence counter.
+// It is encoded using specific channels rather than post-encoding normalizers.
+#define MP_RADIO_STATUS_DEDICATED_CHAN_ENABLE 0  // Fallback: disabled if encode_chan is not available in the ArduPilot MAVLink library; uses standard encoding
 #define MP_RADIO_STATUS_MAVLINK_CHAN MAVLINK_COMM_2
 // V17_signal_fix: Mission Planner PreFlight Telemetry Signal is driven by RADIO_STATUS.
-// Keep RADIO_STATUS on the same vehicle sysid/compid as V15.3 (known good), but compute
+// Keep RADIO_STATUS on the same vehicle system and component ID, but compute
 // its value from real LoRa PHY measurements and packet freshness, not from synthetic state.
 #define RADIO_STATUS_USE_VEHICLE_SYSID 1
 #define RADIO_STATUS_USE_TELEM_RADIO_COMPID 0  // SINGLE_SOURCE: RADIO_STATUS uses AUTOPILOT1 compid to avoid MP false sequence gaps
@@ -374,11 +417,10 @@ unsigned long lastRadioStatusMs = 0;
 #define MP_STRICT_RAW_TELEMETRY_DEDUP_ENABLE 1  // drop duplicate raw telemetry even during param hold; PARAM/MISSION/ACK still pass
 
 // SINGLE SOURCE IDENTITY FIX:
-// Mission Planner menghitung packet lost dari stream MAVLink. Jika GCS mengirim
-// telemetry dengan campuran compid AUTOPILOT1 + TELEMETRY_RADIO + raw component,
-// Mission Planner dapat membaca gap sequence palsu. Patch ini membuat semua output
-// MAVLink yang menuju Mission Planner tampak berasal dari satu identitas vehicle.
-// Command path Mission Planner->Pixhawk dan LoRa protocol tidak diubah.
+// Mission Planner calculates packet loss from the incoming MAVLink stream. If GCS forwards
+// telemetry using multiple component IDs, Mission Planner may report false sequence gaps.
+// This module makes all outbound GCS MAVLink telemetry appear to originate from a single vehicle identity.
+// Downlink paths and LoRa protocols remain unchanged.
 #define MP_SINGLE_SOURCE_IDENTITY_ENABLE 1
 #define MP_SINGLE_SOURCE_FORCE_COMPID MAV_COMP_ID_AUTOPILOT1
 
@@ -404,9 +446,8 @@ unsigned long lastRadioStatusMs = 0;
 #define MP_BIDIR_MIN_ACK_WINDOW_OK 2
 #define MP_LINK_STARTUP_GRACE_MS 6000UL
 
-// V21 SURGICAL FIX: hanya memengaruhi laporan RADIO_STATUS ke Mission Planner.
-// LoRa PHY tetap statis/manual; tidak ada adaptive SF/TP.
-// ACK/downlink tetap dihitung sebagai metrik internal, tetapi tidak mencap Telemetry Signal MP.
+// Link Quality reporting: Only affects reports to Mission Planner's RADIO_STATUS.
+// LoRa PHY settings remain static; no automated adaptive rate changes.
 #define MP_SIGNAL_REQUIRE_BIDIR_ACK 0
 #define MP_REPORT_REMOTE_RSSI_TO_MP 0
 // V23 SURGICAL RESTART FIX:
@@ -416,7 +457,7 @@ unsigned long lastRadioStatusMs = 0;
 #define MP_MIRROR_RSSI_TO_REMRSSI_FOR_MP_UI 1
 #define MP_RADIO_ZERO_BURST_AFTER_LOSS_MS 2500UL
 
-// V26 SURGICAL LINK-LOSS INDICATOR:
+// Link Loss Indicator:
 // Only affects GCS -> Mission Planner status reporting when the UAV LoRa beacon is stale.
 // It does not change LoRa PHY, packet format, ACK logic, MAVLink identity, or telemetry reconstruction.
 #define MP_LINK_LOSS_INDICATOR_ENABLE 1
@@ -455,8 +496,7 @@ HardwareSerial MetricsSerial(2);
 #include "GCCalibHelpers.h"
 
 // Forward declarations used before the Arduino preprocessor generates prototypes.
-// Penting untuk Arduino IDE: tanpa deklarasi eksplisit ini, auto-prototype Arduino
-// dapat ditempatkan sebelum struct custom seperti MavlinkRawPacket/ParamBulkPacket/
+// Explicit declarations to prevent Arduino preprocessor from generating prototypes before custom structs are defined.
 // CompactCommandQueueItem/ConfigProposalPacket sehingga compile gagal.
 bool peekNextRawPacket(MavlinkRawPacket &pkt, bool &fromHighQueue);
 bool decodeArmCommandFromCompactItem(const CompactCommandQueueItem &item, bool &arm, bool &force);
@@ -553,7 +593,7 @@ uint8_t nextMpMavSeq(uint8_t sysid, uint8_t compid) {
       return 0;
     }
   }
-  // Fallback jika tabel penuh: tetap deterministic, tidak memakai sequence bawaan raw/encode.
+  // Fallback if table is full: maintains deterministic routing without utilizing raw sequence numbers.
   static uint8_t fallbackSeq = 0;
   return fallbackSeq++;
 }
@@ -652,9 +692,8 @@ void canonicalizeMissionPlannerSource(uint8_t &sysid, uint8_t &compid) {
 }
 #endif
 
-// Remote link metric nyata dari sisi UAV: UAV mengukur RSSI/SNR paket downlink GCS,
-// lalu mengirim ringkasannya di beacon 78 byte. Ini membuat remrssi RADIO_STATUS
-// berbasis pengukuran RF nyata, bukan salinan/sintesis dari rssi lokal GCS.
+// Actual remote link metrics measured by the UAV: UAV calculates RSSI/SNR of GCS downlink
+// packets and transmits them back in the beacon. This guarantees RADIO_STATUS.remrssi reflects true physical RF measurements.
 uint8_t lastRemoteRssiQ = 0;
 int8_t lastRemoteSnrX2 = -128;
 unsigned long lastRemoteMetricMs = 0;
@@ -797,7 +836,7 @@ bool isBidirectionalLinkHealthyForMissionPlanner() {
 
 uint8_t telemetryAckEveryForSF(uint8_t sf) {
 #if TELEMETRY_ACK_DECIMATION_ENABLE
-  // V14 delay/force fix:
+  // Delay and safety override handler:
   // SF10-SF11 still have enough airtime margin for ACK every beacon.
   // This gives Mission Planner commands a downlink opportunity every cycle.
   // SF12 remains decimated because a 78B beacon still consumes a large part of the 1s budget at SF12.
@@ -1003,7 +1042,7 @@ unsigned long paramSyncNoValueExitForSF(uint8_t sf) {
 }
 
 unsigned long paramSyncIdleExitForSF(uint8_t sf) {
-  // Setelah param sync selesai/di-cancel, Data tab harus kembali normal tanpa menunggu 20 detik.
+  // Restore normal telemetry rates immediately once param sync completes or is canceled.
   if (sf >= 11) return 5000UL;
   if (sf == 10) return 3500UL;
   return PARAM_SYNC_IDLE_EXIT_MS;
@@ -1790,7 +1829,7 @@ bool shouldForwardArmAckToMissionPlanner(const mavlink_command_ack_t &ack) {
     return false;
   }
 
-  // V16 STABLE:
+  // Flight action status handler:
   // Do not synthesize/proxy ACK for ARM or FORCE ARM. Mission Planner must receive
   // the real flight-controller COMMAND_ACK so the Force Arm dialog and rejection
   // reason remain consistent. A bridge ACCEPTED ACK can close MP's doCommand while
@@ -1881,7 +1920,7 @@ void enqueueGCSMavlinkMessage(const mavlink_message_t &msg) {
                     armTxnForce ? "FORCE ARM sent; FC may still disarm on failsafe" : "ARM sent; waiting real FC ACK",
                     2500UL);
   }
-  // V17 real-state: no optimistic/synthetic mode heartbeat.
+  // Real flight controller telemetry state routing:
   // Mode/armed state in Mission Planner changes only after real FC HEARTBEAT/ACK returns.
 #if COMMAND_PROXY_ACK_ON_ENQUEUE_ENABLE
   // Pada SF tinggi, Mission Planner doCommand sering timeout/crash sebelum LoRa half-duplex
@@ -2087,7 +2126,7 @@ void serviceOptimisticModeHeartbeat() {
 }
 
 void sendOptimisticSetModeHeartbeatToMissionPlanner(const mavlink_message_t &msg) {
-  // V15: keep a short-lived mode overlay so old beacons do not immediately overwrite
+  // Keep a short-lived mode overlay so older telemetry packets do not immediately overwrite mode changes.
   // the requested mode before the slow high-SF command/ACK cycle finishes.
   if (activeSF < OPTIMISTIC_MODE_MIN_SF) return;
   if (msg.msgid != MAVLINK_MSG_ID_SET_MODE) return;
@@ -2259,7 +2298,7 @@ uint8_t missionPlannerRadioSignalByte() {
 
   int targetPct;
   if (expected >= 4) {
-    // Real dan tidak sintetis: jika PDR LoRa window = 97.75%, RADIO_STATUS akan
+    // Physical packet delivery rates calculated over sample windows
     // berada sekitar 97-98%, selama beacon masih fresh. Ini bukan dipaksa 100%.
     targetPct = pdrPct;
   } else {
@@ -2268,14 +2307,14 @@ uint8_t missionPlannerRadioSignalByte() {
     targetPct = (freshnessPct * 70 + rfPct * 30) / 100;
   }
 
-  // Freshness adalah pembatas utama: tidak ada beacon baru = sinyal turun.
+  // Freshness acts as the primary governor: no incoming packets causes the link quality to drop.
   if (targetPct > freshnessPct) targetPct = freshnessPct;
 
   // RF hanya menjadi safety cap jika benar-benar buruk. Dengan cara ini, RSSI/SNR
   // yang terukur agak aneh pada jarak 60 cm tidak menurunkan indikator dari PDR 98% ke 86%.
   if (rfPct < 35 && targetPct > rfPct) targetPct = rfPct;
 
-  // V21 SURGICAL FIX:
+  // Metric calculation filter:
   // Telemetry Signal di Mission Planner dibuat merepresentasikan kualitas uplink telemetry UAV->GCS
   // yang benar-benar diterima GCS. ACK/downlink tetap dihitung oleh kode, tetapi tidak menjadi cap
   // utama indikator ini, karena itu yang menyebabkan stuck sekitar 68% saat PDR/RSSI/SNR uplink bagus.
@@ -2290,7 +2329,7 @@ uint8_t missionPlannerRadioSignalByte() {
 
   targetPct = constrain(targetPct, 0, 100);
 
-  // EWMA ringan agar tampilan tidak bergetar, tetapi cukup responsif.
+  // Exponentially Weighted Moving Average (EWMA) to smooth link quality rendering while remaining responsive.
   if (mpLinkQualityEwma_x10 < 0) {
     mpLinkQualityEwma_x10 = targetPct * 10;
   } else {
@@ -2334,12 +2373,12 @@ void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid) {
     winLost = (uint16_t)lost32;
   }
 
-  radio_status.rssi = signal;                    // uplink UAV->GCS, dihitung dari RSSI/SNR/PDR nyata di GCS
-  radio_status.remrssi = remoteSignal;           // downlink GCS->UAV, diukur nyata oleh UAV dan dikirim balik
+  radio_status.rssi = signal;                    // Uplink quality (UAV to GCS) computed from measured GCS RSSI/SNR/PDR
+  radio_status.remrssi = remoteSignal;           // Downlink quality (GCS to UAV) measured on UAV and echoed in beacon
   radio_status.txbuf = (uint8_t)constrain(100 - (int)((rawHighCount + rawLowCount + compactCmdCount) * 100UL / (RAW_HIGH_QUEUE_SIZE + RAW_LOW_QUEUE_SIZE + COMPACT_CMD_QUEUE_SIZE)), 0, 100);
   radio_status.noise = 0;
   radio_status.remnoise = 0;
-  // V21 SURGICAL FIX:
+  // Metric calculation filter:
   // RADIO_STATUS.rxerrors/fixed adalah counter error/corrected packet modem, bukan totalLost/totalRx bridge.
   // Kode ini tidak mengukur corrected packet ala SiK, jadi jangan isi fixed=totalRx karena dapat membuat
   // Mission Planner menilai radio telemetry terdegradasi. PDR/PLR asli tetap tersedia di MetricsSerial.
@@ -2379,7 +2418,7 @@ void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid) {
 
 #if RADIO_STATUS_LEGACY_RADIO_ENABLE
   // Beberapa versi Mission Planner/ArduPilot lebih konsisten mengisi field Telemetry Signal
-  // dari pesan RADIO (ardupilotmega) selain RADIO_STATUS. Nilainya tetap berasal dari metrik LoRa nyata.
+  // Derived from real physical LoRa parameters.
   #ifdef MAVLINK_MSG_ID_RADIO
     mavlink_radio_t radio_legacy;
     memset(&radio_legacy, 0, sizeof(radio_legacy));
@@ -2472,7 +2511,7 @@ void serviceMissionPlannerLostRadioStatus(unsigned long now) {
 
 void serviceRadioStatusPeriodic() {
   // Periodic RADIO_STATUS keeps Mission Planner PreFlight telemetry signal fresh.
-  // V26: if the UAV beacon becomes stale, keep reporting RADIO_STATUS=0 periodically
+  // If the UAV beacon becomes stale, periodically report RADIO_STATUS = 0 to update the GCS telemetry interface.
   // and emit one STATUSTEXT warning so the operator gets an explicit lost-link indication.
   // This is only GCS -> Mission Planner reporting; LoRa PHY and flight-control logic are unchanged.
   if (!latestBeaconValid) return;
@@ -2908,7 +2947,7 @@ bool shouldProxyAckForCommand(uint16_t command) {
 #if COMMAND_PROXY_ACK_HIGH_SF_ENABLE
   if (command == 0) return false;
   if (activeSF < COMMAND_PROXY_ACK_MIN_SF) return false;
-  // V14 delay/force fix:
+  // Delay and safety override handler:
   // Do NOT proxy MAV_CMD_COMPONENT_ARM_DISARM as ACCEPTED. If normal arming is rejected
   // by ArduPilot pre-arm checks, Mission Planner must receive the real DENIED/FAILED ACK
   // and STATUSTEXT so the Force Arm option can appear.
@@ -2924,7 +2963,7 @@ bool shouldProxyAckForCommand(uint16_t command) {
 }
 
 void sendForceArmProxyAckToMissionPlanner() {
-  // V16 STABLE: never send bridge COMMAND_ACK for FORCE ARM.
+  // Flight action status handler: never send bridge COMMAND_ACK for FORCE ARM.
   // Only notify the user; wait for real FC ACK to avoid Mission Planner stale-ACK crash.
   sendBridgeEvent(MAV_SEVERITY_WARNING, "FORCE ARM forwarded; waiting real FC ACK", 2500UL);
 }
@@ -2988,7 +3027,7 @@ bool sendAckOrPendingCommand(uint32_t ackCounter) {
       popCompactCommandPacket();
       radioBytesTx += compact.len;
       compactCmdTxCount++;
-      // V17 real-state: do not send bridge/proxy COMMAND_ACK for any command.
+      // Real state tracking: do not proxy command ACKs in normal mode.
       // Wait for real COMMAND_ACK/STATUSTEXT/HEARTBEAT from the flight controller.
       return true;
     }
@@ -3006,7 +3045,7 @@ bool sendAckOrPendingCommand(uint32_t ackCounter) {
       if (isArmCmd) markArmCommandTransactionTx(arm, force);
       popNextRawPacket(fromHighQueue);
       radioBytesTx += packetLen;
-      // V17 real-state: no proxy ACK. Forward only real FC response.
+      // Forward actual flight controller responses only.
       (void)flightCmd;
       return true;
     }
@@ -3057,7 +3096,7 @@ void updateScheduledConfigGuard() {
 
 void updateRecoveryScanning() {
   unsigned long now = millis();
-  if (scheduledConfig) return;  // tunggu migrasi SF/TP selesai atau guard membatalkan
+  if (scheduledConfig) return;  // Wait for SF/TP migration to complete or the guard timer to clear
   unsigned long idleLimit = phyLocked ? linkIdleScanAfterForSF(activeSF) : 0UL;
   if (phyLocked && now - lastPacketMs <= idleLimit) return;
   if (now - lastScanMs < RECOVERY_SCAN_STEP_MS) return;
@@ -3067,7 +3106,7 @@ void updateRecoveryScanning() {
   applyRadioSettings(activeSF);
 #else
   phyLocked = false;
-  // UAV-master PHY: saat belum lock/timeout, GCS menyapu SF7..SF12.
+  // UAV-master PHY: scans spreading factors SF7 to SF12 sequentially when not locked
   activeSF = scanSF;
   applyRadioSettings(activeSF);
   scanSF++;
@@ -3197,7 +3236,7 @@ void loop() {
   updateScheduledConfigGuard();
   updateRecoveryScanning();
   hardRecoverLoRaIfNoPackets();
-  // V17 real-state: no cached/synthetic heartbeat, no proxy ACK, no optimistic UI heartbeat.
+  // Real telemetry state mode: disables optimistic UI heartbeats and cached bridge ACKs.
   // Mission Planner receives only real FC state reconstructed from beacon/raw MAVLink.
   serviceLoRaParamNoticeBurst();
   serviceRadioStatusPeriodic();

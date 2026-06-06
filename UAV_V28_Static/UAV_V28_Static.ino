@@ -89,14 +89,14 @@
 #endif
 
 // =====================================================
-// NODE UAV - OPTIMIZED MAVLINK-AWARE LORA BRIDGE - STATIS V18 PAYLOAD 78B MPCONNECT FIX
-// Payload beacon tetap 78 byte dan interval tetap 1 detik untuk pengujian PHY LoRa
+// UAV NODE - OPTIMIZED MAVLINK-AWARE LORA TELEMETRY BRIDGE
+// Transmits compact telemetry beacons at regular intervals to GCS and forwards GCS command packets
 // =====================================================
 
-#define DEFAULT_SF 7   // SF master UAV. Ubah hanya di node UAV; GCS akan auto-scan dan lock.
+#define DEFAULT_SF 7   // Spreading Factor (Range: 7 to 12). GCS will automatically scan and lock to this SF. Higher Spreading Factor increases link margin but increases airtime and reduces update rate.
 #define DEFAULT_TP 16  // TP master UAV dalam dBm. GCS akan mengikuti TP ini setelah lock.
 #define UAV_MASTER_PHY_MODE 1
-#define PHY_TEST_FORCE_DEFAULT_SF 1  // 1 = selalu pakai DEFAULT_SF saat boot dan tulis ke EEPROM
+#define PHY_TEST_FORCE_DEFAULT_SF 1  // 1 = always enforce DEFAULT_SF on boot and write to EEPROM
 #define EEPROM_SF_ADDR 0
 
 #define FIXED_INTERVAL_MS 400
@@ -121,7 +121,7 @@ uint8_t linkMode = LINK_MODE_NORMAL;
 
 // ================= Flight Command Priority Mode =================
 #define FLIGHT_COMMAND_HOLD_MS 8000UL
-#define COMMAND_DOWNLINK_LISTEN_EVERY_BEACON_SF_MIN 10  // V14: tidak lagi dipakai untuk listen panjang tiap beacon SF tinggi
+#define COMMAND_DOWNLINK_LISTEN_EVERY_BEACON_SF_MIN 10  // Spreading factor threshold below which downlink listening window is enabled
 unsigned long commandModeUntilMs = 0;
 uint32_t flightCommandRxCount = 0;
 uint32_t flightCommandDownlinkSlotCount = 0;
@@ -133,7 +133,7 @@ unsigned long lastParamValueMs = 0;
 uint16_t lastParamIndex = 0;
 uint16_t lastParamCount = 0;
 
-// ================= Calibration / Config Mode (tetap) =================
+// ================= Calibration and Configuration Mode Governors =================
 #define CAL_CONFIG_HOLD_MS 180000UL
 bool calConfigActive = false;
 unsigned long calConfigUntilMs = 0;
@@ -162,7 +162,7 @@ uint32_t calStatustextRxCount = 0;
 // Full-list parameter sync is blocked at SF10-SF12. Generic PARAM_REQUEST_READ is also blocked at high SF; setup PARAM_SET remains allowed.
 #define BLOCK_FULL_PARAM_SYNC_HIGH_SF 1
 #define FULL_PARAM_SYNC_MAX_SF 9
-// V24 surgical feature screening: extra Mission Planner setup/log/status responses are only
+// Screening: limits setup and log download responses at high spreading factors to prevent link congestion.
 // forwarded on SF7-SF9. SF10-SF12 remain command/monitoring links, not bulk/setup links.
 #define MP_EXTENDED_SETUP_FEATURES_MAX_SF 9
 #define BLOCK_PARAM_READ_HIGH_SF 1
@@ -170,8 +170,8 @@ uint32_t calStatustextRxCount = 0;
 #define PARAM_SYNC_HARD_ABORT_MS_SF12 30000UL
 #define PARAM_SYNC_FORCE_SF 7
 #define PARAM_SYNC_FORCE_TP TP_MAX
-// 0 = SF/TP tetap mengikuti konfigurasi uji agar pengujian PHY tidak bias.
-// 1 = masuk setup/parameter mode paksa SF7/TP maksimum untuk respons paling cepat.
+// 0 = Maintain active spreading factor and transmit power during setup/calibration modes.
+// 1 = Temporarily override to SF7 and maximum transmit power for maximum responsiveness.
 #define FAST_SETUP_FORCE_PHY_ENABLE 0
 #define PARAM_SYNC_TELEM_INTERVAL_MS 1000UL
 #define PARAM_SYNC_LOWRAW_INTERVAL_MS 35UL
@@ -204,23 +204,60 @@ unsigned long paramExtWriteAckUntilMs = 0;
 
 // Protocol constants moved to TelemetryProtoFix.h
 
-// ================= LoRa Pins / RF =================
-#define LORA_SS    5
-#define LORA_RST   25
-#define LORA_DIO0  26
-#define LORA_DIO1  RADIOLIB_NC
+// =============================================================================
+// LORA PHYSICAL LAYER TUNABLE PARAMETERS (UAV SIDE)
+// =============================================================================
+
+// LoRa Hardware SPI Pin Connections
+#define LORA_SS    5                  // SPI Slave Select pin
+#define LORA_RST   25                 // Radio reset pin
+#define LORA_DIO0  26                 // Digital I/O 0 pin (packet RX/TX interrupts)
+#define LORA_DIO1  RADIOLIB_NC        // Digital I/O 1 pin (Not Connected)
+
+// LoRa RF Channel Configuration
+// [Tuning Guideline] Must match exactly between GCS and UAV nodes.
+// Range: 410.0 MHz to 525.0 MHz (for 433 MHz modules) or 860.0 MHz to 930.0 MHz (for 915 MHz modules).
+// Impact: Changing the frequency helps avoid local RF interference or align with legal ISM band standards in your region.
 #define FREQ_MHZ      433.0
-#define LORA_BW_KHZ   500.0          // BW 500 kHz
+
+// LoRa Bandwidth (kHz)
+// [Tuning Guideline] Higher bandwidth enables higher data transmission rate (less airtime/latency), 
+// but decreases receiver sensitivity and reduces overall range (link budget).
+// Options: 125.0, 250.0, 500.0. Recommended default: 500.0 kHz for high throughput.
+#define LORA_BW_KHZ   500.0
+
+// LoRa Coding Rate Denominator
+// [Tuning Guideline] Code rate is 4/(LORA_CR_DEN). Options: 5 (CR 4/5), 6 (CR 4/6), 7 (CR 4/7), 8 (CR 4/8).
+// Impact: Higher CR denominator increases error-correction redundancy (better link robustness in noise), 
+// but increases packet airtime and latency.
 #define LORA_CR_DEN   8
+
+// LoRa Sync Word
+// [Tuning Guideline] Must match between GCS and UAV. Range: 0x00 to 0xFF.
+// Impact: Isolates your network. Only transceivers with the matching sync word can decode each other's packets.
 #define LORA_SYNC     0x12
 
+// Spreading Factor Boundaries
+// [Tuning Guideline] Spreading Factor range. Min: 7, Max: 12.
+// Impact: Higher Spreading Factors increase receiver sensitivity and double the range per step, 
+// but exponentially increase packet airtime. At SF12, update rate drops to ~1 Hz.
 #define SF_MIN 7
 #define SF_MAX 12
+
+// UAV Transmit Power Configurations
+// [Tuning Guideline] Range: 10 to 16 dBm (depending on hardware limit).
+// Impact: Higher transmit power improves signal strength at the GCS receiver, but increases UAV power consumption.
 #define TP_MIN 10
 #define TP_MAX 16
+
+// Adaptive Link Rate (MSADR) Transmit Power boundaries
 #define MSADR_TP_MIN 10
 #define MSADR_TP_MAX 16
 #define MSADR_TP_DEFAULT 14
+
+// Adaptive Link Rate threshold adjustments
+// [Tuning Guideline] Higher values make the spreading factor adaptation more conservative and stable;
+// lower values make it adjust faster/more aggressively to link variations.
 #define MSADR_SUCCESS_THRESHOLD 2
 #define MSADR_FAIL_THRESHOLD 2
 
@@ -234,8 +271,7 @@ unsigned long paramExtWriteAckUntilMs = 0;
 #define RADIO_SOFT_RECOVERY_MIN_GAP_MS 3000UL
 
 // ================= Boot / Autostart Recovery =================
-// Surgical fix: membuat node UAV bisa pulih sendiri setelah power-on tanpa perlu tombol reset manual.
-// Tidak mengubah LoRa PHY, payload, ACK policy, atau algoritma link.
+// Auto-recovery: enables the UAV node to recover and re-initialize the LoRa transceiver after power-on.
 #define BOOT_STABILIZE_MS                 1500UL
 #define LORA_INIT_RETRY_COUNT             8
 #define LORA_INIT_RETRY_DELAY_MS          250UL
@@ -291,17 +327,34 @@ HardwareSerial PixhawkSerial(2);
 mavlink_message_t mavMsg;
 mavlink_status_t mavStatus;
 
-// ================= Bridge Link Failsafe =================
-// Action is sent by UAV-side ESP32 to the flight controller when the bidirectional
-// telemetry link (GCS ACK/downlink) is lost repeatedly. This complements ArduPilot
-// FS_GCS_ENABLE; it does not replace proper FC failsafe parameter setup.
+// =============================================================================
+// BRIDGE LINK FAILSAFE PARAMETERS (UAV SIDE)
+// =============================================================================
+
+// Enable or disable GCS link failsafe triggering
 #define ENABLE_SAFETY_RTL 1
-#define BRIDGE_FAILSAFE_ENABLE 0  // FC-first failsafe: ArduPilot FS_GCS_ENABLE decides action; bridge action remains optional
+
+// Flight Controller Failsafe Action Coordinator
+// [Tuning Guideline] 0 = FC-first failsafe: ArduPilot's FS_GCS_ENABLE parameter governs the failsafe action;
+// ESP32 bridge stays passive. 1 = ESP32 actively injects failsafe flight modes.
+#define BRIDGE_FAILSAFE_ENABLE 0
+
+// Safety Failsafe Mode Options
 #define BRIDGE_FAILSAFE_ACTION_RTL 1
 #define BRIDGE_FAILSAFE_ACTION_LAND 2
 #define BRIDGE_FAILSAFE_ACTION_BRAKE 3
+
+// Configured Failsafe Mode
+// [Tuning Guideline] Determines what mode ArduPilot is forced into when the telemetry link is lost.
+// Options: BRIDGE_FAILSAFE_ACTION_RTL, BRIDGE_FAILSAFE_ACTION_LAND, BRIDGE_FAILSAFE_ACTION_BRAKE.
 #define BRIDGE_FAILSAFE_ACTION BRIDGE_FAILSAFE_ACTION_RTL
+
+// Number of consecutive failed packets before initiating failsafe actions
 #define LINK_FAIL_RTL_THRESHOLD 5
+
+// Connection stall timeout in milliseconds before GCS link failsafe is triggered
+// [Tuning Guideline] Must be configured higher than the beacon interval + maximum packet airtime.
+// Recommended range: 5000 ms to 15000 ms. Setting it too low causes transient failsafes under high noise.
 #define BRIDGE_FAILSAFE_TIMEOUT_MS 6500UL
 #define RTL_REPEAT_INTERVAL_MS 10000UL
 #define ARDUPILOT_COPTER_MODE_RTL 6
@@ -393,8 +446,8 @@ uint32_t telemetryTxAttemptsMetric = 0;
 float telemetryTxEnergyMetric_mJ = 0.0f;
 float telemetryTxToAMetric_ms = 0.0f;
 
-// Kualitas downlink GCS->UAV yang benar-benar diukur oleh radio UAV ketika menerima ACK/command.
-// Dikirim balik ke GCS lewat beacon 78 byte sebagai remote_rssi/remrssi nyata.
+// Remote GCS-to-UAV link quality measured directly at the UAV node.
+// Sent back to the GCS inside the telemetry beacon to populate remote RSSI.
 float lastGcsDownlinkRssi = -125.0f;
 float lastGcsDownlinkSnr = -64.0f;
 unsigned long lastGcsDownlinkMetricMs = 0;
@@ -402,7 +455,7 @@ unsigned long lastGcsDownlinkMetricMs = 0;
 // VALID_* flag defines moved to TelemetryProtoFix.h (VALID_HEARTBEAT..VALID_LOCAL_VEL, VALID2_*)
 
 
-// ================= Struktur data untuk menyimpan data dari Pixhawk (lengkap) =================
+// ================= Data Structures for Pixhawk Telemetry Storage =================
 struct __attribute__((packed)) PixhawkDataFull {
   // ── Core status ─────────────────────────────────
   uint32_t valid_flags;
@@ -534,7 +587,7 @@ bool acceptRollingCompactSeqFromGCS(uint16_t seq) {
     return true;
   }
 
-  // Jika GCS reboot saat link UAV-GCS sempat idle lama, seq bisa mulai kecil lagi.
+  // Resets sequence counter if GCS restarts after a prolonged link idle state.
   unsigned long idleMs = millis() - securityLastCompactSeqMs;
   if (idleMs > SECURITY_REBOOT_GRACE_MS && seq < 16) {
     securityLastCompactSeqFromGCS = seq;
@@ -796,7 +849,7 @@ void updateParamSyncTimeout() {
     abortParamSyncRecovery("no_param_value"); return;
   }
 
-  // Jika link ACK/GCS tidak sehat saat param sync, keluar otomatis agar telemetry normal pulih.
+  // Auto-abort parameter synchronization if the GCS downlink connection fails.
   if (lastAckOkMs > 0 && now - lastAckOkMs > paramSyncLinkStallForSF(currentSF)) {
     abortParamSyncRecovery("link_stall"); return;
   }
@@ -823,7 +876,7 @@ bool canAcceptParamValueToLowQueue() {
 
 uint8_t profileForSF(int sf) { (void) sf; return PROFILE_BEACON; }
 
-// ================= MODIFIKASI STATIS dengan percepatan param sync =================
+// ================= Parameter Synchronization Acceleration Helpers =================
 unsigned long intervalForSF(int sf) { (void) sf; return FIXED_INTERVAL_MS; }
 
 unsigned long lowRawIntervalForSF(int sf) {
@@ -938,7 +991,7 @@ bool enqueueLowRawPacketBundled(const uint8_t *data, uint8_t len) {
   return enqueueLowRawPacket(data, len);
 }
 
-// V17 real-state scheduler: bundle multiple high-priority FC feedback MAVLink
+// Bundles multiple high-priority flight controller MAVLink responses into single packets:
 // messages into one LoRa raw packet when possible. This reduces airtime and queue
 // depth without inventing/synthesizing vehicle state.
 bool enqueueHighRawPacketBundled(const uint8_t *data, uint8_t len) {
@@ -1335,7 +1388,7 @@ void beginFlightCommandPriorityMode() {
   flightCommandRxCount++;
   commandModeUntilMs = millis() + FLIGHT_COMMAND_HOLD_MS;
   if (paramSyncActive) abortParamSyncRecovery("flight_command_priority");
-  // V17 real-state command scheduler: a new user command must not wait behind
+  // Prioritizes user commands ahead of queued telemetry packets:
   // stale high-priority feedback from an older command. Real FC feedback for the
   // new command will be queued immediately after the command reaches the FC.
   flushHighQueueForRecovery();
@@ -1351,7 +1404,7 @@ void updateFlightCommandPriorityMode() {
   if (!paramSyncActive && !calibrationConfigModeActive()) linkMode = LINK_MODE_NORMAL;
 }
 
-// ================= HANDLER PARAM_SET untuk mengubah SF =================
+// ================= Spreading Factor Runtime Handlers =================
 void handleParamSet(const mavlink_param_set_t &ps) {
   char param_id[17];
   copyParamId(param_id, ps.param_id);
@@ -1363,7 +1416,7 @@ void handleParamSet(const mavlink_param_set_t &ps) {
       EEPROM.write(EEPROM_SF_ADDR, newSF);
       EEPROM.commit();
       proposeConfig(newSF, currentTP);
-      // Kirim PARAM_VALUE sebagai konfirmasi bahwa request SF diterima oleh radio bridge.
+      // Send PARAM_VALUE packet to confirm SF proposal reception.
       mavlink_message_t msg;
       mavlink_param_value_t pv;
       pv.param_value = newSF;
@@ -1372,7 +1425,7 @@ void handleParamSet(const mavlink_param_set_t &ps) {
       copyParamId16(pv.param_id, "STATIC_SF");
       pv.param_type = MAV_PARAM_TYPE_UINT8;
       mavlink_msg_param_value_encode(RADIO_SYS_ID, RADIO_COMP_ID, &msg, &pv);
-      enqueueMavlinkLowForGCS(msg); // atau High, tidak masalah
+      enqueueMavlinkLowForGCS(msg);
     }
   }
 }
@@ -1417,7 +1470,7 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         copyParamId(expectedParamId, ps.param_id);
         paramWriteAckExpected = true; paramWriteAckUntilMs = millis() + PARAM_WRITE_ACK_WINDOW_MS;
         if (isInteractiveSetupParamId(expectedParamId)) startCalibrationConfigMode();
-        // PARAM_SET tidak perlu memasuki full param-sync; tunggu PARAM_VALUE ack lewat jalur high-priority.
+        // Individual parameter updates bypass full param synchronization and route through high-priority queues.
         // Tangani perubahan SF
         handleParamSet(ps);
       }
@@ -1465,7 +1518,7 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         copyParamId(expectedParamExtId, ps.param_id);
         paramExtWriteAckExpected = true; paramExtWriteAckUntilMs = millis() + PARAM_EXT_WRITE_ACK_WINDOW_MS;
         if (isInteractiveSetupParamId(expectedParamExtId)) startCalibrationConfigMode();
-        // PARAM_EXT_SET tidak perlu memasuki full param-sync; tunggu ACK/value terkait.
+        // Parameter set requests bypass full synchronization queues.
       }
 #endif
     }
@@ -1636,7 +1689,7 @@ void enqueuePixhawkMavlinkIfNeeded(const mavlink_message_t &msg) {
   updateParamWriteAckState();
   if (msg.msgid == MAVLINK_MSG_ID_COMMAND_ACK) { calCommandAckRxCount++; enqueueMavlinkHighForGCS(msg); return; }
   if (msg.msgid == MAVLINK_MSG_ID_STATUSTEXT) { calStatustextRxCount++; enqueueMavlinkHighForGCS(msg); return; }
-  // V17 real-state low-latency feedback: after any user flight command, forward
+  // Low-latency feedback: immediately forward flight controller responses following a command.
   // the next real FC HEARTBEAT/SYS_STATUS through the high queue. This makes
   // Mission Planner update mode/armed/battery state quickly without synthetic UI.
   if (commandModeActive()) {
@@ -1871,7 +1924,7 @@ bool waitResponseFromGCS(unsigned long timeoutMs, uint32_t expectedCounter, bool
   if (rxLen == 0 || rxLen > LORA_RX_MAX) return false;
   if (!validatePacket(rxBuf, rxLen)) return false;
 
-  // RF metric ini berasal dari paket downlink GCS yang benar-benar diterima oleh UAV.
+  // Calculated link quality based on received GCS packets.
   lastGcsDownlinkRssi = radio.getRSSI();
   lastGcsDownlinkSnr = radio.getSNR();
   lastGcsDownlinkMetricMs = millis();
@@ -2075,7 +2128,7 @@ bool sendTelemetryPacketToGCS() {
     }
   }
 
-  // lastTelemetryTx memakai waktu mulai TX agar interval beacon tetap mendekati 1 detik.
+  // lastTelemetryTx tracks packet start times to keep the beacon interval near 1.0 seconds.
   lastTelemetryTx = txStartMs;
   lastAnyTx = millis();
   return expectAck ? ackOK : true;
@@ -2090,7 +2143,7 @@ bool sendFallbackBeaconIfNeeded() {
 }
 
 void enforceHighSfNoParamSync() {
-  // V28 static fix: SF10-SF12 keep the same telemetry payload/interval,
+  // High spreading factors enforce regular telemetry beacons and compact payloads.
   // but must not carry full param-sync/bulk setup traffic.
   if (currentSF <= FULL_PARAM_SYNC_MAX_SF) return;
   if (paramSyncActive) { abortParamSyncRecovery("high_sf_no_param_sync"); return; }
@@ -2179,7 +2232,7 @@ void loop() {
   // Saat command/action baru diterima, balasan Pixhawk (terutama COMMAND_ACK/STATUSTEXT)
   // harus naik dulu sebelum beacon SF tinggi. Untuk SF7-SF11 perilaku lama dipertahankan.
   if (commandModeActive() && highCount > 0) { sendRawPacketToGCS(true); return; }
-  // Beacon tetap dipaksa tiap 1 detik agar heartbeat Mission Planner tidak starvation ketika queue MAVLink padat.
+  // Keep beacon rate constant to prevent Mission Planner connection timeout.
   if (telemetryDue) { sendTelemetryPacketToGCS(); return; }
 #ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
   // MAG_CAL_PROGRESS diprioritaskan dengan latest-value cache per compass_id dan bundling.
