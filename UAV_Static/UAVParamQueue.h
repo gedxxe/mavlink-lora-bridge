@@ -18,6 +18,7 @@ extern uint32_t paramBulkQueueDrop;
 extern uint32_t paramValueDrop;
 extern uint32_t paramBulkQueuedCount;
 extern int currentSF;
+extern unsigned long lastParamEnqueueMs;
 
 // Functions for parameter bulk transfer
 void flushLowQueue();
@@ -92,6 +93,7 @@ inline bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
   pkt->count++;
   finalizePacketCrc(pkt, PARAM_BULK_LEN(pkt->count));
   paramBulkQueuedCount++;
+  lastParamEnqueueMs = millis();
   return true;
 }
 
