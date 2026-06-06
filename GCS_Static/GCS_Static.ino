@@ -1038,13 +1038,16 @@ unsigned long paramSyncNoValueExitForSF(uint8_t sf) {
   if (sf >= 12) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF12;
   if (sf == 11) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF11;
   if (sf == 10) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF10;
-  return PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9;
+  if (sf == 9)  return 30000UL; // SF9 needs more time for slow responses
+  if (sf == 8)  return 25000UL;
+  return PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9; // 20000UL at SF7
 }
 
 unsigned long paramSyncIdleExitForSF(uint8_t sf) {
-  // Allow generous idle time at all SF to tolerate LoRa retries and Pixhawk polling gaps.
   if (sf >= 11) return 8000UL;
   if (sf == 10) return 5000UL;
+  if (sf == 9)  return 15000UL;
+  if (sf == 8)  return 15000UL;
   return PARAM_SYNC_IDLE_EXIT_MS;  // 15000UL at SF7-9
 }
 

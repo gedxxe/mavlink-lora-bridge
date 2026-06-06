@@ -196,10 +196,10 @@ uint32_t calCommandAckRxCount = 0;
 uint32_t calStatustextRxCount = 0;
 
 #define PARAM_SYNC_TIMEOUT_MS          600000UL
-#define PARAM_SYNC_IDLE_EXIT_MS          3000UL
+#define PARAM_SYNC_IDLE_EXIT_MS          15000UL
 #define PARAM_SYNC_DRAIN_MAX_MS          1000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9 12000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF10  12000UL
+#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9 20000UL
+#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF10  20000UL
 #define PARAM_SYNC_NO_VALUE_EXIT_MS_SF11  10000UL
 #define PARAM_SYNC_NO_VALUE_EXIT_MS_SF12   8000UL
 #define PARAM_SYNC_LINK_STALL_MS_SF7_9    18000UL
@@ -779,20 +779,17 @@ unsigned long paramSyncNoValueExitForSF(uint8_t sf) {
   if (sf >= 12) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF12;
   if (sf == 11) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF11;
   if (sf == 10) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF10;
-  // SF8/SF9 still support param sync, but PARAM_VALUE arrives slower than SF7.
-  if (sf == 9) return 30000UL;
-  if (sf == 8) return 25000UL;
-  return PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9;
+  if (sf == 9)  return 30000UL; // SF9 needs more time for slow responses
+  if (sf == 8)  return 25000UL;
+  return PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9; // 20000UL at SF7
 }
 
 unsigned long paramSyncIdleExitForSF(uint8_t sf) {
-  // After param sync ends/cancels, restore normal stream quickly.
-  // SF10-SF12 are not used for full param sync.
-  if (sf >= 11) return 5000UL;
-  if (sf == 10) return 3500UL;
-  if (sf == 9) return 8000UL;
-  if (sf == 8) return 6000UL;
-  return PARAM_SYNC_IDLE_EXIT_MS;
+  if (sf >= 11) return 8000UL;
+  if (sf == 10) return 5000UL;
+  if (sf == 9)  return 15000UL;
+  if (sf == 8)  return 15000UL;
+  return PARAM_SYNC_IDLE_EXIT_MS; // 15000UL at SF7
 }
 
 unsigned long paramSyncLinkStallForSF(uint8_t sf) {
@@ -936,41 +933,54 @@ void updateAsyncParamPolling() {
 
   unsigned long now = millis();
 
-  // --- Retry / timeout guard ---
-  // If the Pixhawk has not responded to the last request within the timeout
-  // window, either retry the same index or skip it after max retries.
-  if (asyncParamLastReqMs > 0 && asyncParamLastValMs < asyncParamLastReqMs) {
-    // No PARAM_VALUE received since the last request.
-    if (now - asyncParamLastReqMs >= ASYNC_PARAM_POLL_TIMEOUT_MS) {
-      if (asyncParamRetryCount >= ASYNC_PARAM_POLL_MAX_RETRIES) {
-        // Give up on this index and advance. MP's built-in retry logic will
-        // re-request any indices it notices are missing.
-        asyncParamPollIndex++;
-        asyncParamRetryCount = 0;
-        asyncParamLastReqMs  = 0;
-        if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
-          asyncParamPollActive = false;
-          asyncParamPollDoneCount++;
-          return;
-        }
-      } else {
-        // Retry: allow the rate-limiter below to re-send the same index.
-        asyncParamRetryCount++;
-        asyncParamLastReqMs = 0;  // reset so the rate-limiter fires immediately
+  // --- Backpressure guard: only request if the bulk queue has headroom ---
+  if ((int)PARAM_BULK_QUEUE_SIZE - (int)paramBulkCount < ASYNC_PARAM_POLL_QUEUE_HEADROOM) return;
+
+  // --- Stall detection / Retry logic ---
+  // If no new parameter value has arrived for ASYNC_PARAM_POLL_TIMEOUT_MS,
+  // we assume a stall and retry from the last received index + 1 or skip if max retries exceeded.
+  if (asyncParamLastReqMs > 0 && now - asyncParamLastValMs >= ASYNC_PARAM_POLL_TIMEOUT_MS) {
+    if (asyncParamRetryCount >= ASYNC_PARAM_POLL_MAX_RETRIES) {
+      // Skip the stalled index
+      asyncParamPollIndex++;
+      asyncParamRetryCount = 0;
+      asyncParamLastValMs = now; // reset timer
+      asyncParamLastReqMs = 0;
+      if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
+        asyncParamPollActive = false;
+        asyncParamPollDoneCount++;
+        return;
       }
     } else {
-      return;  // still within the silence window, wait longer
+      // Retry: roll back the poll index to lastParamIndex + 1 (the next one we need)
+      uint16_t nextIdx = (asyncParamTotalCount > 0 && lastParamValueMs > 0) ? (lastParamIndex + 1) : 0;
+      asyncParamPollIndex = nextIdx;
+      asyncParamRetryCount++;
+      asyncParamLastValMs = now; // reset timer to avoid immediate repeated retry trigger
+      asyncParamLastReqMs = 0;
     }
   }
 
-  // --- Rate limiter: respect ASYNC_PARAM_POLL_INTERVAL_MS ---
-  if (asyncParamLastReqMs > 0 && now - asyncParamLastReqMs < ASYNC_PARAM_POLL_INTERVAL_MS) return;
+  // --- Initial/Count discovery wait ---
+  // If we haven't learned the total count yet, wait for the first response.
+  // The stall/retry logic above will retry index 0 if it times out.
+  if (asyncParamTotalCount == 0 && asyncParamPollIndex > 0) {
+    return;
+  }
 
-  // --- Backpressure guard: only request if the bulk queue has headroom ---
-  // PARAM_BULK_QUEUE_SIZE is defined as 72; headroom of 3 means we stop
-  // sending new requests when >= 69 slots are occupied, giving the TX loop
-  // time to drain before we create more work.
-  if ((int)PARAM_BULK_QUEUE_SIZE - (int)paramBulkCount < ASYNC_PARAM_POLL_QUEUE_HEADROOM) return;
+  // --- Completion Check ---
+  if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
+    asyncParamPollActive = false;
+    asyncParamPollDoneCount++;
+    return;
+  }
+
+  // --- Rate limiter: respect dynamic pollInterval ---
+  unsigned long pollInterval = ASYNC_PARAM_POLL_INTERVAL_MS;
+  if (currentSF == 8)  pollInterval = 120UL;
+  if (currentSF >= 9)  pollInterval = 200UL;
+
+  if (asyncParamLastReqMs > 0 && now - asyncParamLastReqMs < pollInterval) return;
 
   // --- Send PARAM_REQUEST_READ for the current index ---
   mavlink_message_t req;
@@ -978,11 +988,13 @@ void updateAsyncParamPolling() {
   pr.target_system    = getTargetSysId();
   pr.target_component = getTargetCompId();
   pr.param_index      = (int16_t)asyncParamPollIndex;
-  // param_id[0] = '\0' tells ArduPilot to use param_index instead of name lookup.
   memset(pr.param_id, 0, sizeof(pr.param_id));
   mavlink_msg_param_request_read_encode(asyncParamPollSysId, asyncParamPollCompId, &req, &pr);
   writeMavlinkToPixhawk(req);
   asyncParamLastReqMs = millis();
+  
+  // Advance index immediately (pipelined)
+  asyncParamPollIndex++;
 }
 
 void updateParamWriteAckState() {
@@ -1938,17 +1950,10 @@ void enqueuePixhawkMavlinkIfNeeded(const mavlink_message_t &msg) {
           // Learn the total number of parameters from the first response.
           asyncParamTotalCount = pv.param_count;
         }
-        // Advance past the index we just received. Use param_index+1 to track
-        // exactly which one was acknowledged, not just a naive counter.
-        if (pv.param_index + 1 > asyncParamPollIndex) {
-          asyncParamPollIndex = pv.param_index + 1;
-        }
         // Check if all parameters have been delivered.
         if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
           asyncParamPollActive = false;
           asyncParamPollDoneCount++;
-          // stopParamSync() will be called by updateParamSyncTimeout() once
-          // the queues drain (lastParamIndex >= lastParamCount - 1).
         }
       }
       // ---------------------------------------------------------------------------------
@@ -2449,9 +2454,18 @@ void loop() {
   if (sendPendingMagCalProgressToGCS()) return;
 #endif
   if (highCount > 0) { sendRawPacketToGCS(true); return; }
-  if (paramSyncActive && paramBulkCount > 0 && now - lastParamBulkTx >= PARAM_BULK_TX_INTERVAL_MS) {
-    if (sendParamBulkPacketToGCS()) lastParamBulkTx = millis();
-    return;
+  if (paramSyncActive && paramBulkCount > 0) {
+    ParamBulkPacket pkPeek;
+    if (peekParamBulkPacket(pkPeek)) {
+      uint8_t limit = paramBulkRecordsLimitForCurrentSF();
+      bool full = (pkPeek.count >= limit);
+      bool hasNewer = (paramBulkCount > 1);
+      bool idle = (lastParamValueMs > 0 && now - lastParamValueMs >= 100UL);
+      if ((full || hasNewer || idle) && now - lastParamBulkTx >= PARAM_BULK_TX_INTERVAL_MS) {
+        if (sendParamBulkPacketToGCS()) lastParamBulkTx = millis();
+        return;
+      }
+    }
   }
   if (scheduledConfig) { sendTelemetryPacketToGCS(); return; }
   if (activeConfigOrParamMode() && lowCount > 0 && now - lastLowRawTx >= lowRawIntervalForSF(currentSF)) {
