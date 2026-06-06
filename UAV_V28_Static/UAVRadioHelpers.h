@@ -8,14 +8,14 @@
 
 // Extern references to variables in main UAV sketch
 extern SX1278 radio;
-extern uint8_t currentSF;
-extern uint8_t currentTP;
+extern int currentSF;
+extern int currentTP;
 extern uint8_t currentProfile;
 extern uint32_t loraInitRetrySuccessCount;
 extern unsigned long lastRadioRecoveryMs;
 extern uint32_t radioSoftRecoveryCount;
 extern bool paramSyncActive;
-extern int lowCount;
+extern uint16_t lowCount;
 
 #ifndef LORA_BW_KHZ
 #define LORA_BW_KHZ 250.0f

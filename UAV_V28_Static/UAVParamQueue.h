@@ -17,7 +17,7 @@ extern uint16_t paramBulkCount;
 extern uint32_t paramBulkQueueDrop;
 extern uint32_t paramValueDrop;
 extern uint32_t paramBulkQueuedCount;
-extern uint8_t currentSF;
+extern int currentSF;
 
 // Functions for parameter bulk transfer
 void flushLowQueue();

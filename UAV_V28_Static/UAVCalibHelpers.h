@@ -22,8 +22,8 @@ extern uint32_t rawTxCount;
 extern uint32_t counter;
 extern float lastLatency;
 extern unsigned long lastAnyTx;
-extern uint8_t currentSF;
-extern uint8_t currentTP;
+extern int currentSF;
+extern int currentTP;
 
 extern SX1278 radio;
 
