@@ -100,12 +100,14 @@ struct ConfigAckPacket;
 #define RC_RAW_RANGE  (RC_RAW_MAX - RC_RAW_MIN)   // 1000
 
 static inline uint8_t rcRawToPct(uint16_t raw) {
+  if (raw == 65535U) return 255;
   if (raw <= RC_RAW_MIN) return 0;
   if (raw >= RC_RAW_MAX) return 100;
   return (uint8_t)(((uint32_t)(raw - RC_RAW_MIN) * 100U) / RC_RAW_RANGE);
 }
 
 static inline uint16_t rcPctToRaw(uint8_t pct) {
+  if (pct == 255) return 65535U;
   return (uint16_t)(RC_RAW_MIN + ((uint32_t)pct * RC_RAW_RANGE) / 100U);
 }
 
