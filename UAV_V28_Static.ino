@@ -202,14 +202,7 @@ char expectedParamExtId[17] = {0};
 unsigned long paramExtWriteAckUntilMs = 0;
 #define PARAM_EXT_WRITE_ACK_WINDOW_MS 12000UL
 
-// ================= Protocol =================
-#define PROTOCOL_VERSION       0x04
-#define NETWORK_ID             0x2244
-#define AUTH_TOKEN             0xA56C93D1UL  // Pre-shared secret: tidak lagi dikirim mentah; dipakai untuk auth-tag per paket.
-#define SECURITY_KEY_MIX        0x3D7F21B9UL
-#define SECURITY_ANTI_REPLAY_ENABLE 1
-#define SECURITY_MAX_COUNTER_GAP    5000UL
-#define SECURITY_REBOOT_GRACE_MS    15000UL
+// Protocol constants moved to TelemetryProtoFix.h
 
 // ================= LoRa Pins / RF =================
 #define LORA_SS    5
@@ -252,23 +245,17 @@ unsigned long paramExtWriteAckUntilMs = 0;
 #define PIXHAWK_UART_SILENT_MS            12000UL
 #define PIXHAWK_UART_RECOVERY_MIN_GAP_MS  8000UL
 
-#define PKT_LINK_ACK          0xA5
-#define PKT_MAVLINK_RAW       0x4D
-#define PKT_CMD_COMPACT       0x43
-#define PKT_PARAM_BULK        0x50
-#define PKT_TELEM_BEACON      0x57
-#define PKT_CONFIG_PROPOSE    0xC0
-#define PKT_CONFIG_ACK        0xC1
+// Packet types moved to TelemetryProtoFix.h
 
-#define PROFILE_BEACON        0
+// PROFILE_BEACON moved to TelemetryProtoFix.h
 
-#define RAW_MAVLINK_MAX       235
-#define PARAM_BULK_MAX_RECORDS 9
+// RAW_MAVLINK_MAX moved to TelemetryProtoFix.h
+// PARAM_BULK_MAX_RECORDS moved to TelemetryProtoFix.h
 #define PARAM_BULK_QUEUE_SIZE  72
 #define PARAM_BULK_TX_INTERVAL_MS 0UL
 #define HIGH_QUEUE_SIZE       64
 #define LOW_QUEUE_SIZE        160
-#define LORA_RX_MAX           255
+// LORA_RX_MAX moved to TelemetryProtoFix.h
 #define MAG_CAL_COMPASS_MAX   8
 #define MAG_CAL_PROGRESS_TX_INTERVAL_MS 70UL
 #define STREAM_CONFIG_ENABLE          1
@@ -421,262 +408,13 @@ unsigned long lastGcsDownlinkMetricMs = 0;
 #define VALID_GPS_RAW     (1UL << 6)
 
 // ================= Struktur data untuk menyimpan data dari Pixhawk (lengkap) =================
-struct __attribute__((packed)) GpsRawDataFull {
-  uint64_t time_usec;
-  uint8_t fix_type;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  uint16_t eph;
-  uint16_t epv;
-  uint16_t vel;
-  uint16_t cog;
-  uint8_t satellites_visible;
-};
+// Shared struct definitions moved to TelemetryProtoFix.h
 
-struct __attribute__((packed)) PixhawkDataFull {
-  uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t mav_type;
-  uint8_t autopilot;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-  float roll;
-  float pitch;
-  float yaw;
-  float rollspeed;
-  float pitchspeed;
-  float yawspeed;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  int32_t relative_alt_mm;
-  int16_t vx;
-  int16_t vy;
-  int16_t vz;
-  uint16_t hdg;
-  float airspeed;
-  float groundspeed;
-  int16_t heading;
-  uint16_t throttle;
-  float climb;
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-  uint16_t ekf_flags;
-  GpsRawDataFull gps;
-};
-
-// ================= Struktur data untuk payload beacon 78 byte =================
-// Teknik: semantic fixed-size compression. Data penting tetap dikirim 1 Hz,
-// tetapi float/field besar dipadatkan menjadi fixed-point agar paket LoRa total 78 byte.
-struct __attribute__((packed)) GpsDataRingkas {
-  uint8_t fix_type;
-  uint8_t satellites_visible;
-  int16_t alt_dm;      // GPS altitude dalam decimeter; GCS mengembalikan ke mm.
-  uint16_t eph;
-  uint16_t epv;
-}; // 8 byte
-
-struct __attribute__((packed)) PixhawkDataBeacon {
-  uint8_t valid_flags;       // VALID_* hanya memakai bit 0..6, cukup 8 bit.
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-
-  int16_t roll_cd;           // centi-degree, dikonversi lagi ke radian di GCS.
-  int16_t pitch_cd;
-  int16_t yaw_cd;
-
-  int32_t lat;
-  int32_t lon;
-  int16_t relative_alt_dm;   // relative altitude dalam decimeter; GCS mengembalikan ke mm.
-
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-
-  uint16_t airspeed_cms;
-  uint16_t groundspeed_cms;
-  uint16_t heading;          // centi-degree, tetap kompatibel dengan VFR_HUD/GPS cog.
-  int16_t climb_cms;
-  uint8_t throttle;          // persen 0..100.
-
-  uint16_t ekf_flags;
-  GpsDataRingkas gps;
-}; // 49 byte
-
-// ================= Telemetry meta 9 byte =================
-// cnt_ack, success/fail streak, dan energy mJ tetap dipertahankan sesuai kebutuhan pengujian link.
-struct __attribute__((packed)) TelemetryMeta {
-  uint8_t cnt_ack;
-  uint16_t success_streak;
-  uint16_t fail_streak;
-  uint32_t telem_tx_energy_mJ_x100;
-};
-
-// ================= Header dan paket =================
-struct __attribute__((packed)) PacketHeader {
-  uint8_t type;
-  uint8_t protocol;
-  uint16_t network_id;
-  uint16_t crc;
-  uint32_t token;
-};
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
-
-struct __attribute__((packed)) TelemetryBeaconPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-
-  // 3 byte radio/status ringkas:
-  // - radio_packed menyimpan SF, TP, profile dalam 1 byte.
-  // - remote_snr_x2 dan remote_rssi_q adalah kualitas downlink GCS->UAV yang diukur nyata oleh UAV.
-  uint8_t radio_packed;
-  int8_t remote_snr_x2;
-  uint8_t remote_rssi_q;
-
-  uint8_t link_mode;
-  uint16_t latency_x100;
-  TelemetryMeta meta;
-  PixhawkDataBeacon data;
-}; // Ukuran tetap: 78 byte
-static_assert(sizeof(GpsDataRingkas) == 8, "GpsDataRingkas harus 8 byte");
-static_assert(sizeof(PixhawkDataBeacon) == 49, "PixhawkDataBeacon harus 49 byte");
-static_assert(sizeof(TelemetryMeta) == 9, "TelemetryMeta harus 9 byte");
-static_assert(sizeof(TelemetryBeaconPacket) == 78, "TelemetryBeaconPacket harus 78 byte");
-
-// ================= Payload-78 radio packing & RF metric helpers =================
-static inline uint8_t packRadioParams78(uint8_t sf, uint8_t tp, uint8_t profile) {
-  if (sf < SF_MIN) sf = SF_MIN;
-  if (sf > SF_MAX) sf = SF_MAX;
-  if (tp < TP_MIN) tp = TP_MIN;
-  if (tp > TP_MAX) tp = TP_MAX;
-  return (uint8_t)(((sf - SF_MIN) & 0x07) | (((tp - TP_MIN) & 0x0F) << 3) | ((profile & 0x01) << 7));
-}
-
-static inline uint8_t unpackSf78(uint8_t packed) {
-  uint8_t sf = (uint8_t)((packed & 0x07) + SF_MIN);
-  if (sf < SF_MIN) sf = SF_MIN;
-  if (sf > SF_MAX) sf = SF_MAX;
-  return sf;
-}
-
-static inline uint8_t unpackTp78(uint8_t packed) {
-  uint8_t tp = (uint8_t)(((packed >> 3) & 0x0F) + TP_MIN);
-  if (tp < TP_MIN) tp = TP_MIN;
-  if (tp > TP_MAX) tp = TP_MAX;
-  return tp;
-}
-
-static inline uint8_t unpackProfile78(uint8_t packed) {
-  return (uint8_t)((packed >> 7) & 0x01);
-}
-
-static inline uint8_t loraRssiDbmToQ254(float rssiDbm) {
-  // 0 = tidak valid/tidak ada pengukuran. 1..254 = RSSI nyata terkuantisasi.
-  if (rssiDbm <= -125.0f) return 1;
-  if (rssiDbm >= -45.0f) return 254;
-  float q = ((rssiDbm + 125.0f) * 253.0f / 80.0f) + 1.0f;
-  if (q < 1.0f) q = 1.0f;
-  if (q > 254.0f) q = 254.0f;
-  return (uint8_t)(q + 0.5f);
-}
-
-static inline int8_t loraSnrDbToX2(float snrDb) {
-  if (snrDb < -63.5f) snrDb = -63.5f;
-  if (snrDb > 63.5f) snrDb = 63.5f;
-  float x = snrDb * 2.0f;
-  return (int8_t)(x >= 0.0f ? (x + 0.5f) : (x - 0.5f));
-}
-
-#define TELEMETRY_BEACON_PACKET_BYTES ((uint16_t)sizeof(TelemetryBeaconPacket))
-#define TELEMETRY_BEACON_APP_PAYLOAD_BYTES ((uint16_t)(sizeof(TelemetryBeaconPacket) - sizeof(PacketHeader)))
-#define TELEMETRY_BEACON_SENSOR_PAYLOAD_BYTES ((uint16_t)sizeof(PixhawkDataBeacon))
-
-// ================= Struktur lain yang diperlukan =================
-struct __attribute__((packed)) MavlinkRawPacket { PacketHeader hdr; uint8_t len; uint8_t payload[RAW_MAVLINK_MAX]; };
-
-#define COMPACT_CMD_KIND_ARM_DISARM   1
-#define COMPACT_CMD_KIND_SET_MODE     2
-#define COMPACT_CMD_KIND_COMMAND_LONG 3
-#define COMPACT_CMD_SCALE_1000        1000.0f
-#define COMPACT_CMD_SCALE_1E7         10000000.0f
-
-struct __attribute__((packed)) CompactCommandBasePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-};
-
-struct __attribute__((packed)) CompactArmDisarmPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t arm;
-  int32_t param2_x1000;
-};
-
-struct __attribute__((packed)) CompactSetModePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-};
-
-struct __attribute__((packed)) CompactCommandLongPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint16_t command;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t confirmation;
-  int32_t p1_x1000;
-  int32_t p2_x1000;
-  int32_t p3_x1000;
-  int32_t p4_x1000;
-  int32_t p5_x1e7;
-  int32_t p6_x1e7;
-  int32_t p7_x1000;
-};
-
-// Compact parameter transport khusus untuk mempercepat PARAM_VALUE Mission Planner.
-// Mission Planner tetap menerima MAVLink PARAM_VALUE standar karena GCS merekonstruksi ulang pesan MAVLink-nya.
-struct __attribute__((packed)) CompactParamValue {
-  float param_value;
-  uint16_t param_count;
-  uint16_t param_index;
-  char param_id[16];
-  uint8_t param_type;
-};
-struct __attribute__((packed)) ParamBulkPacket {
-  PacketHeader hdr;
-  uint8_t count;
-  uint8_t sysid;
-  uint8_t compid;
-  uint8_t reserved;
-  CompactParamValue rec[PARAM_BULK_MAX_RECORDS];
-};
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
+#define COMPACT_CMD_MAX_LEN sizeof(CompactCommandLongPacket)
 
-struct __attribute__((packed)) LinkAckPacket { PacketHeader hdr; uint32_t counter; };
-struct __attribute__((packed)) ConfigProposalPacket { PacketHeader hdr; uint32_t counter; uint32_t apply_counter; uint8_t current_sf; uint8_t current_tp; uint8_t next_sf; uint8_t next_tp; uint8_t next_profile; };
-struct __attribute__((packed)) ConfigAckPacket { PacketHeader hdr; uint32_t counter; uint32_t apply_counter; uint8_t accepted; uint8_t next_sf; uint8_t next_tp; uint8_t next_profile; };
-
-// Forward declarations used before the Arduino preprocessor generates prototypes.
-// Penting untuk Arduino IDE: tanpa deklarasi eksplisit ini, auto-prototype Arduino
-// dapat ditempatkan sebelum struct custom seperti MavlinkRawPacket/ParamBulkPacket
-// sehingga compile gagal: 'MavlinkRawPacket was not declared in this scope'.
 uint8_t profileForSF(int sf);
 bool isFlightActionCommandId(uint16_t command);
 bool peekHighRawPacket(MavlinkRawPacket &pkt);
@@ -714,79 +452,22 @@ uint32_t magCalProgressBundleFailCount = 0;
 #endif
 
 // ================= Utility / CRC =================
-bool isPacketCrcByte(size_t i) {
-  return (i == offsetof(PacketHeader, crc) || i == (offsetof(PacketHeader, crc) + 1));
+// Local helper wrappers delegating to TelemetryProtoFix.h
+
+static inline uint8_t packRadioParams78(uint8_t sf, uint8_t tp, uint8_t profile) {
+  return packRadioParams78(sf, tp, profile, SF_MIN, SF_MAX, TP_MIN, TP_MAX);
 }
 
-bool isPacketAuthByte(size_t i) {
-  size_t off = offsetof(PacketHeader, token);
-  return (i >= off && i < off + sizeof(uint32_t));
+static inline uint8_t unpackSf78(uint8_t packed) {
+  return unpackSf78(packed, SF_MIN, SF_MAX);
 }
 
-uint16_t computePacketCrc(const uint8_t *buf, size_t len) {
-  if (len < sizeof(PacketHeader)) return 0;
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < len; i++) {
-    uint8_t v = buf[i];
-    // CRC tidak menghitung field crc dan auth-tag karena keduanya diisi setelah payload siap.
-    if (isPacketCrcByte(i) || isPacketAuthByte(i)) v = 0;
-    crc ^= ((uint16_t)v << 8);
-    for (uint8_t b = 0; b < 8; b++) {
-      if (crc & 0x8000) crc = (crc << 1) ^ 0x1021;
-      else crc <<= 1;
-    }
-  }
-  return crc;
-}
-
-uint32_t computePacketAuthTag(const uint8_t *buf, size_t len) {
-  // Lightweight keyed MAC: AUTH_TOKEN tidak dikirim mentah.
-  // Field hdr.token berisi auth-tag yang berubah mengikuti isi paket + CRC + secret.
-  uint32_t h = 2166136261UL ^ AUTH_TOKEN ^ SECURITY_KEY_MIX ^ ((uint32_t)NETWORK_ID << 8) ^ (uint32_t)PROTOCOL_VERSION;
-  for (size_t i = 0; i < len; i++) {
-    uint8_t v = buf[i];
-    if (isPacketAuthByte(i)) v = 0;
-    h ^= v;
-    h *= 16777619UL;
-    h ^= (h >> 13);
-  }
-  h ^= (uint32_t)len * 0x9E3779B9UL;
-  h ^= (h >> 16);
-  h *= 0x7FEB352DUL;
-  h ^= (h >> 15);
-  h *= 0x846CA68BUL;
-  h ^= (h >> 16);
-  if (h == 0 || h == AUTH_TOKEN) h ^= 0xA5A55A5AUL;
-  return h;
-}
-
-void initHeader(PacketHeader &hdr, uint8_t type) {
-  hdr.type = type;
-  hdr.protocol = PROTOCOL_VERSION;
-  hdr.network_id = NETWORK_ID;
-  hdr.crc = 0;
-  hdr.token = 0; // Diisi auth-tag dinamis oleh finalizePacketCrc().
-}
-
-void finalizePacketCrc(void *packet, size_t len) {
-  PacketHeader *hdr = (PacketHeader *)packet;
-  hdr->token = 0;
-  hdr->crc = 0;
-  hdr->crc = computePacketCrc((uint8_t *)packet, len);
-  hdr->token = computePacketAuthTag((uint8_t *)packet, len);
+static inline uint8_t unpackTp78(uint8_t packed) {
+  return unpackTp78(packed, TP_MIN, TP_MAX);
 }
 
 bool validatePacket(const uint8_t *buf, size_t len) {
-  if (len < sizeof(PacketHeader)) { invalidLengthDrop++; return false; }
-  const PacketHeader *hdr = (const PacketHeader *)buf;
-  if (hdr->protocol != PROTOCOL_VERSION || hdr->network_id != NETWORK_ID) {
-    invalidProtocolDrop++; return false;
-  }
-  uint16_t calc = computePacketCrc(buf, len);
-  if (calc != hdr->crc) { invalidCrcDrop++; return false; }
-  uint32_t tag = computePacketAuthTag(buf, len);
-  if (tag != hdr->token) { invalidProtocolDrop++; return false; }
-  return true;
+  return validatePacketInternal(buf, len, invalidLengthDrop, invalidProtocolDrop, invalidCrcDrop);
 }
 
 bool acceptRollingCompactSeqFromGCS(uint16_t seq) {
@@ -859,31 +540,12 @@ bool isInteractiveSetupParamId(const char *id) {
   return false;
 }
 
-float estimateTxCurrentMa(uint8_t tpDbm) {
-  if (tpDbm <= 10) return 29.0f;
-  if (tpDbm <= 12) return 45.0f;
-  if (tpDbm <= 14) return 90.0f;
-  return 120.0f;
+static inline float estimateLoRaToA_ms(uint8_t sf, float bwHz, uint8_t crDen, uint16_t payloadBytes) {
+  return estimateLoRaToA_ms(sf, bwHz, crDen, payloadBytes, LORA_PREAMBLE_SYMBOLS);
 }
 
-float estimateLoRaToA_ms(uint8_t sf, float bwHz, uint8_t crDen, uint16_t payloadBytes) {
-  uint8_t de = 0;
-  if (sf >= 11 && bwHz <= 125000.0f) de = 1;
-  float tsymMs = (powf(2.0f, sf) / bwHz) * 1000.0f;
-  float preambleMs = (LORA_PREAMBLE_SYMBOLS + 4.25f) * tsymMs;
-  float numerator = (8.0f * payloadBytes) - (4.0f * sf) + 28.0f + (16.0f * LORA_PHY_CRC_ENABLED) - (20.0f * LORA_IMPLICIT_HEADER);
-  float denominator = 4.0f * (sf - (2.0f * de));
-  float payloadSymbols = 8.0f;
-  if (numerator > 0.0f && denominator > 0.0f) {
-    payloadSymbols += ceilf(numerator / denominator) * crDen;
-  }
-  return preambleMs + (payloadSymbols * tsymMs);
-}
-
-float estimatePacketEnergy_mJ(uint8_t tpDbm, float toaMs) {
-  float currentA = estimateTxCurrentMa(tpDbm) / 1000.0f;
-  float timeS = toaMs / 1000.0f;
-  return METRICS_SUPPLY_VOLTAGE * currentA * timeS * 1000.0f;
+static inline float estimatePacketEnergy_mJ(uint8_t tpDbm, float toaMs) {
+  return estimatePacketEnergy_mJ(tpDbm, toaMs, METRICS_SUPPLY_VOLTAGE);
 }
 
 void applyRadioSettings(uint8_t sf, uint8_t tp) {
