@@ -94,7 +94,7 @@
 // =====================================================
 
 #define DEFAULT_SF 7   // Spreading Factor (Range: 7 to 12). GCS will automatically scan and lock to this SF. Higher Spreading Factor increases link margin but increases airtime and reduces update rate.
-#define DEFAULT_TP 16  // TP master UAV dalam dBm. GCS akan mengikuti TP ini setelah lock.
+#define DEFAULT_TP 16  // Transmit power for the UAV master node, in dBm. GCS follows this after locking.
 #define UAV_MASTER_PHY_MODE 1
 #define PHY_TEST_FORCE_DEFAULT_SF 1  // 1 = always enforce DEFAULT_SF on boot and write to EEPROM
 #define EEPROM_SF_ADDR 0
@@ -132,6 +132,54 @@ uint32_t paramSyncAutoAbortCount = 0;
 unsigned long lastParamValueMs = 0;
 uint16_t lastParamIndex = 0;
 uint16_t lastParamCount = 0;
+
+// ================= Async Parameter Polling Proxy =================
+// Instead of forwarding PARAM_REQUEST_LIST directly to the Pixhawk (which
+// triggers a 1000+ parameter flood at 115200 bps, instantly overflowing
+// the LoRa queues), we intercept the request and pace it ourselves.
+// One PARAM_REQUEST_READ is sent per index, only when the paramBulkQueue
+// has sufficient headroom. Mission Planner retries missing indices
+// automatically, so gaps due to RF loss are healed automatically.
+//
+// [Tunable] ASYNC_PARAM_POLL_INTERVAL_MS — minimum gap between consecutive
+// PARAM_REQUEST_READ messages sent to the Pixhawk.
+//   Lower  → faster sync, but more UART/LoRa pressure (risk: queue overflow).
+//   Higher → slower sync, but very stable link (risk: MP may time out at >30 s).
+//   Recommended range: 80–250 ms. Default: 120 ms (safe for SF7–SF9 at 500 kHz BW).
+#define ASYNC_PARAM_POLL_INTERVAL_MS      120UL
+
+// [Tunable] ASYNC_PARAM_POLL_QUEUE_HEADROOM — minimum free slots in paramBulkQueue
+// required before the next PARAM_REQUEST_READ is sent.
+//   Lower  → more aggressive filling, risk of overflow under congestion.
+//   Higher → very conservative, slower sync.
+//   Recommended range: 2–6. Default: 3.
+#define ASYNC_PARAM_POLL_QUEUE_HEADROOM   3
+
+// [Tunable] ASYNC_PARAM_POLL_TIMEOUT_MS — if no PARAM_VALUE is received within
+// this window after the last request, the async proxy re-sends the current
+// index request (retry on silence). Range: 1000–5000 ms. Default: 2000 ms.
+#define ASYNC_PARAM_POLL_TIMEOUT_MS     2000UL
+
+// [Tunable] ASYNC_PARAM_POLL_MAX_RETRIES — maximum times to retry a single index
+// before giving up and advancing (avoids infinite stall on a bad param).
+// Range: 3–10. Default: 5.
+#define ASYNC_PARAM_POLL_MAX_RETRIES       5
+
+bool     asyncParamPollActive    = false;  // true while proxy-paced sync is running
+uint16_t asyncParamPollIndex     = 0;      // next parameter index to request
+uint16_t asyncParamTotalCount    = 0;      // total param count learned from first PARAM_VALUE
+unsigned long asyncParamLastReqMs = 0;     // timestamp of last PARAM_REQUEST_READ sent
+unsigned long asyncParamLastValMs = 0;     // timestamp of last PARAM_VALUE received during async poll
+uint8_t  asyncParamRetryCount    = 0;      // retry counter for the current index
+uint32_t asyncParamPollStartCount = 0;     // incremented each time async poll is (re)started
+uint32_t asyncParamPollDoneCount  = 0;     // incremented each time async poll completes cleanly
+uint32_t asyncParamPollAbortCount = 0;     // incremented on abort/timeout
+uint8_t  asyncParamPollSysId    = 1;       // target sysid for requests (learned from MP)
+#ifndef MAV_COMP_ID_MISSIONPLANNER
+#define MAV_COMP_ID_MISSIONPLANNER 190     // Standard Mission Planner component ID (MAVLink spec)
+#endif
+uint8_t  asyncParamPollCompId   = MAV_COMP_ID_AUTOPILOT1; // target compid (updated on first PARAM_REQUEST_LIST)
+// =================================================================
 
 // ================= Calibration and Configuration Mode Governors =================
 #define CAL_CONFIG_HOLD_MS 180000UL
@@ -802,6 +850,9 @@ void abortParamSyncRecovery(const char *reason) {
   paramSyncActive = false;
   paramSyncStartMs = 0;
   lastParamValueMs = 0; lastParamIndex = 0; lastParamCount = 0; paramSyncFastConfigRequested = false;
+  // Also cancel the async polling proxy so it does not fire after the sync window ends.
+  if (asyncParamPollActive) { asyncParamPollActive = false; asyncParamPollAbortCount++; }
+  asyncParamPollIndex = 0; asyncParamTotalCount = 0; asyncParamLastReqMs = 0; asyncParamLastValMs = 0; asyncParamRetryCount = 0;
   resetLinkQualityAfterParamSync();
   if (calibrationConfigModeActive()) linkMode = LINK_MODE_CALIBRATION;
   else linkMode = LINK_MODE_NORMAL;
@@ -823,6 +874,9 @@ void stopParamSync() {
   configPending = false; scheduledConfig = false; configPendingSinceMs = 0; scheduledConfigSinceMs = 0; lastConfigTryMs = 0;
   flushLowQueue(); flushParamBulkQueue(); exitParamSyncStreamMode();
   paramSyncActive = false; paramSyncStartMs = 0; lastParamValueMs = 0; lastParamIndex = 0; lastParamCount = 0; paramSyncFastConfigRequested = false;
+  // Ensure the async proxy does not fire after the sync window closes.
+  asyncParamPollActive = false;
+  asyncParamPollIndex = 0; asyncParamTotalCount = 0; asyncParamLastReqMs = 0; asyncParamLastValMs = 0; asyncParamRetryCount = 0;
   resetLinkQualityAfterParamSync();
   if (calibrationConfigModeActive()) { linkMode = LINK_MODE_CALIBRATION; return; }
   linkMode = LINK_MODE_NORMAL;
@@ -860,6 +914,73 @@ void updateParamSyncTimeout() {
     return;
   }
   if (lastParamValueMs > 0 && now - lastParamValueMs > paramSyncIdleExitForSF(currentSF)) { abortParamSyncRecovery("param_idle_fast_restore"); return; }
+}
+
+// =============================================================================
+// updateAsyncParamPolling() — Async Parameter Polling Proxy State Machine
+// =============================================================================
+// Called every loop() iteration. When asyncParamPollActive is true:
+//   1. Waits until ASYNC_PARAM_POLL_INTERVAL_MS has elapsed since the last request.
+//   2. Waits until paramBulkQueue has ASYNC_PARAM_POLL_QUEUE_HEADROOM free slots
+//      (backpressure guard — prevents queue overflow under congestion).
+//   3. Sends PARAM_REQUEST_READ for asyncParamPollIndex to the Pixhawk.
+//   4. On silence (no PARAM_VALUE for ASYNC_PARAM_POLL_TIMEOUT_MS), retries.
+//   5. After ASYNC_PARAM_POLL_MAX_RETRIES consecutive failures, skips the index
+//      (Mission Planner will request any gaps it detects via its own retry logic).
+// =============================================================================
+void updateAsyncParamPolling() {
+  if (!asyncParamPollActive) return;
+  if (!paramSyncActive)      return;  // safety: only run during paramSync window
+
+  unsigned long now = millis();
+
+  // --- Retry / timeout guard ---
+  // If the Pixhawk has not responded to the last request within the timeout
+  // window, either retry the same index or skip it after max retries.
+  if (asyncParamLastReqMs > 0 && asyncParamLastValMs < asyncParamLastReqMs) {
+    // No PARAM_VALUE received since the last request.
+    if (now - asyncParamLastReqMs >= ASYNC_PARAM_POLL_TIMEOUT_MS) {
+      if (asyncParamRetryCount >= ASYNC_PARAM_POLL_MAX_RETRIES) {
+        // Give up on this index and advance. MP's built-in retry logic will
+        // re-request any indices it notices are missing.
+        asyncParamPollIndex++;
+        asyncParamRetryCount = 0;
+        asyncParamLastReqMs  = 0;
+        if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
+          asyncParamPollActive = false;
+          asyncParamPollDoneCount++;
+          return;
+        }
+      } else {
+        // Retry: allow the rate-limiter below to re-send the same index.
+        asyncParamRetryCount++;
+        asyncParamLastReqMs = 0;  // reset so the rate-limiter fires immediately
+      }
+    } else {
+      return;  // still within the silence window, wait longer
+    }
+  }
+
+  // --- Rate limiter: respect ASYNC_PARAM_POLL_INTERVAL_MS ---
+  if (asyncParamLastReqMs > 0 && now - asyncParamLastReqMs < ASYNC_PARAM_POLL_INTERVAL_MS) return;
+
+  // --- Backpressure guard: only request if the bulk queue has headroom ---
+  // PARAM_BULK_QUEUE_SIZE is defined as 72; headroom of 3 means we stop
+  // sending new requests when >= 69 slots are occupied, giving the TX loop
+  // time to drain before we create more work.
+  if ((int)PARAM_BULK_QUEUE_SIZE - (int)paramBulkCount < ASYNC_PARAM_POLL_QUEUE_HEADROOM) return;
+
+  // --- Send PARAM_REQUEST_READ for the current index ---
+  mavlink_message_t req;
+  mavlink_param_request_read_t pr = {};
+  pr.target_system    = getTargetSysId();
+  pr.target_component = getTargetCompId();
+  pr.param_index      = (int16_t)asyncParamPollIndex;
+  // param_id[0] = '\0' tells ArduPilot to use param_index instead of name lookup.
+  memset(pr.param_id, 0, sizeof(pr.param_id));
+  mavlink_msg_param_request_read_encode(asyncParamPollSysId, asyncParamPollCompId, &req, &pr);
+  writeMavlinkToPixhawk(req);
+  asyncParamLastReqMs = millis();
 }
 
 void updateParamWriteAckState() {
@@ -1340,7 +1461,7 @@ void handleLinkHealth(bool ackOK) {
   sendBridgeFailsafeActionToPixhawk();
 }
 
-// ================= M-SADR DINONAKTIFKAN =================
+// ================= M-SADR DISABLED (Static SF mode) =================
 int findSFIndex(int sf) { return 0; }
 int selectSFByMaxProbability() { return currentSF; }
 float calc_b() { return 0.05f; }
@@ -1441,13 +1562,30 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         beginFlightCommandPriorityMode();
       }
       if (parsedMsg.msgid == MAVLINK_MSG_ID_PARAM_REQUEST_LIST) {
+        // Intercept PARAM_REQUEST_LIST and DO NOT forward to Pixhawk.
+        // Forwarding it directly triggers a 1000+ parameter flood from ArduPilot
+        // at 115200 bps, instantly overwhelming the LoRa queues and stalling
+        // Mission Planner at "Getting Params". Instead, suppress the raw forward
+        // and engage the async polling proxy, which sends one PARAM_REQUEST_READ
+        // per index at a safe paced rate.
+        suppressCurrentRawToPixhawk = true;
         if (fullParamSyncAllowedAtCurrentSF()) {
-          startParamSync();
+          // Learn the requesting sysid/compid so replies are addressed correctly.
+          asyncParamPollSysId  = parsedMsg.sysid  ? parsedMsg.sysid  : 255;
+          asyncParamPollCompId = parsedMsg.compid ? parsedMsg.compid : MAV_COMP_ID_MISSIONPLANNER;
+          // Reset the proxy state machine and kick off from index 0.
+          asyncParamPollActive  = true;
+          asyncParamPollIndex   = 0;
+          asyncParamTotalCount  = 0;   // will be learned from first PARAM_VALUE response
+          asyncParamLastReqMs   = 0;   // force immediate first request
+          asyncParamLastValMs   = 0;
+          asyncParamRetryCount  = 0;
+          asyncParamPollStartCount++;
+          startParamSync();            // engage link mode + queue management
         } else {
-          // Jangan teruskan full parameter list ke Pixhawk pada SF tinggi.
-          // Ini mencegah Pixhawk membanjiri ESP32/LoRa dan membuat telemetry freeze.
+          // Full param sync is blocked at the current spreading factor (SF10-SF12).
+          // Advise the user to reduce SF before initiating parameter download.
           fullParamSyncBlockedHighSfCount++;
-          suppressCurrentRawToPixhawk = true;
           abortParamSyncRecovery("block_full_param_high_sf");
           enqueueBridgeStatusText(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync");
         }
@@ -1494,8 +1632,16 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
 #endif
 #ifdef MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST
       if (parsedMsg.msgid == MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST) {
-        if (fullParamSyncAllowedAtCurrentSF()) startParamSync();
-        else { fullParamSyncBlockedHighSfCount++; suppressCurrentRawToPixhawk = true; abortParamSyncRecovery("block_full_param_ext_high_sf"); enqueueBridgeStatusText(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync"); }
+        // Extended param list also suppressed and proxied via async poll (same logic as standard list).
+        suppressCurrentRawToPixhawk = true;
+        if (fullParamSyncAllowedAtCurrentSF()) {
+          asyncParamPollSysId  = parsedMsg.sysid  ? parsedMsg.sysid  : 255;
+          asyncParamPollCompId = parsedMsg.compid ? parsedMsg.compid : MAV_COMP_ID_MISSIONPLANNER;
+          asyncParamPollActive = true; asyncParamPollIndex = 0; asyncParamTotalCount = 0;
+          asyncParamLastReqMs = 0; asyncParamLastValMs = 0; asyncParamRetryCount = 0;
+          asyncParamPollStartCount++;
+          startParamSync();
+        } else { fullParamSyncBlockedHighSfCount++; abortParamSyncRecovery("block_full_param_ext_high_sf"); enqueueBridgeStatusText(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync"); }
       }
 #endif
 #ifdef MAVLINK_MSG_ID_PARAM_EXT_REQUEST_READ
@@ -1745,6 +1891,33 @@ void enqueuePixhawkMavlinkIfNeeded(const mavlink_message_t &msg) {
       }
       lastParamValueMs = millis(); paramSyncUntilMs = millis() + PARAM_SYNC_TIMEOUT_MS;
       lastParamIndex = pv.param_index; lastParamCount = pv.param_count;
+
+      // --- Async Polling Proxy: advance the poll index on each received PARAM_VALUE ---
+      // When the proxy is active, each arriving PARAM_VALUE confirms the current index
+      // was delivered. Update the total count (learned from the first response), mark
+      // the last received time (to reset the retry timer), and advance to the next index.
+      if (asyncParamPollActive) {
+        asyncParamLastValMs = millis();
+        asyncParamRetryCount = 0;  // successful response, reset retry counter
+        if (pv.param_count > 0 && asyncParamTotalCount == 0) {
+          // Learn the total number of parameters from the first response.
+          asyncParamTotalCount = pv.param_count;
+        }
+        // Advance past the index we just received. Use param_index+1 to track
+        // exactly which one was acknowledged, not just a naive counter.
+        if (pv.param_index + 1 > asyncParamPollIndex) {
+          asyncParamPollIndex = pv.param_index + 1;
+        }
+        // Check if all parameters have been delivered.
+        if (asyncParamTotalCount > 0 && asyncParamPollIndex >= asyncParamTotalCount) {
+          asyncParamPollActive = false;
+          asyncParamPollDoneCount++;
+          // stopParamSync() will be called by updateParamSyncTimeout() once
+          // the queues drain (lastParamIndex >= lastParamCount - 1).
+        }
+      }
+      // ---------------------------------------------------------------------------------
+
       if (isParamWriteAck) {
         if (!enqueueMavlinkHighForGCS(msg)) paramValueDrop++;
         paramWriteAckExpected = false; expectedParamId[0] = 0;
@@ -2208,6 +2381,7 @@ void loop() {
   updateParamWriteAckState();
   updatePixhawkStreamConfig();
   updateParamSyncTimeout();
+  updateAsyncParamPolling();
   updateFlightCommandPriorityMode();
   if (!paramSyncActive && !calibrationConfigModeActive() && paramSyncStreamSlowed) { exitParamSyncStreamMode(); linkMode = LINK_MODE_NORMAL; }
   updateCalibrationConfigMode();
