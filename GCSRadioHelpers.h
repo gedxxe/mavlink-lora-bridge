@@ -28,7 +28,7 @@ extern HardwareSerial MetricsSerial;
 #define TP_MAX 20
 #endif
 
-static inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
+inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
   if (sf < SF_MIN) sf = SF_MIN;
   if (sf > SF_MAX) sf = SF_MAX;
   if (tp < TP_MIN) tp = TP_MIN;
@@ -49,11 +49,11 @@ static inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
   MetricsSerial.println(activeTP);
 }
 
-static inline void applyRadioSettings(uint8_t sf) {
+inline void applyRadioSettings(uint8_t sf) {
   applyRadioSettings(sf, activeTP);
 }
 
-static inline void softRecoverRadio() {
+inline void softRecoverRadio() {
   radio.standby(); delay(2);
   radio.sleep(); delay(10);
   applyRadioSettings(activeSF);

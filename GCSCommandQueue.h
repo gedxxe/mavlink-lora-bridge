@@ -24,11 +24,11 @@ extern int activeSF;
 bool isFlightActionGCSMessage(const mavlink_message_t &msg);
 bool isFlightActionCommandId(uint16_t commandId);
 
-static inline int32_t compactScale1000(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1000 + (v >= 0 ? 0.5f : -0.5f)); }
-static inline int32_t compactScale1e7(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1E7 + (v >= 0 ? 0.5f : -0.5f)); }
-static inline float compactFromX1000(int32_t v) { return ((float)v) / COMPACT_CMD_SCALE_1000; }
+inline int32_t compactScale1000(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1000 + (v >= 0 ? 0.5f : -0.5f)); }
+inline int32_t compactScale1e7(float v) { return (int32_t)(v * COMPACT_CMD_SCALE_1E7 + (v >= 0 ? 0.5f : -0.5f)); }
+inline float compactFromX1000(int32_t v) { return ((float)v) / COMPACT_CMD_SCALE_1000; }
 
-static inline bool enqueueCompactPacket(const void *packet, uint8_t len, uint16_t command) {
+inline bool enqueueCompactPacket(const void *packet, uint8_t len, uint16_t command) {
   if (len == 0 || len > COMPACT_CMD_MAX_LEN) { compactCmdDrop++; commandDrop++; return false; }
   if (compactCmdCount >= COMPACT_CMD_QUEUE_SIZE) {
     compactCmdTail = (compactCmdTail + 1) % COMPACT_CMD_QUEUE_SIZE;
@@ -44,27 +44,27 @@ static inline bool enqueueCompactPacket(const void *packet, uint8_t len, uint16_
   return true;
 }
 
-static inline bool peekCompactCommandPacket(CompactCommandQueueItem &item) {
+inline bool peekCompactCommandPacket(CompactCommandQueueItem &item) {
   if (compactCmdCount == 0) return false;
   item = compactCmdQueue[compactCmdTail];
   return true;
 }
 
-static inline void popCompactCommandPacket() {
+inline void popCompactCommandPacket() {
   if (compactCmdCount == 0) return;
   compactCmdTail = (compactCmdTail + 1) % COMPACT_CMD_QUEUE_SIZE;
   compactCmdCount--;
 }
 
-static inline void flushCompactCommandQueue() { compactCmdHead = 0; compactCmdTail = 0; compactCmdCount = 0; }
+inline void flushCompactCommandQueue() { compactCmdHead = 0; compactCmdTail = 0; compactCmdCount = 0; }
 
-static inline bool shouldUseCompactCommandForMessage(const mavlink_message_t &msg) {
+inline bool shouldUseCompactCommandForMessage(const mavlink_message_t &msg) {
   if (activeSF < 8) return false;
   if (!isFlightActionGCSMessage(msg)) return false;
   return msg.msgid == MAVLINK_MSG_ID_SET_MODE || msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG;
 }
 
-static inline bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck) {
+inline bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck) {
   if (!shouldUseCompactCommandForMessage(msg)) return false;
   if (msg.msgid == MAVLINK_MSG_ID_SET_MODE) {
     mavlink_set_mode_t sm; mavlink_msg_set_mode_decode(&msg, &sm);

@@ -45,15 +45,15 @@ void sendMavlinkMessageToMissionPlanner(const mavlink_message_t &msg);
 void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid);
 
 // Math conversion helpers on GCS side
-static inline float centiDegToRad(int16_t cd) {
+inline float centiDegToRad(int16_t cd) {
   return ((float)cd) * PI / 18000.0f;
 }
 
-static inline int32_t decimeterToMillimeter(int16_t dm) {
+inline int32_t decimeterToMillimeter(int16_t dm) {
   return (int32_t)dm * 100L;
 }
 
-static inline void sendTelemetryBeaconToMissionPlanner(const PixhawkDataBeacon &d) {
+inline void sendTelemetryBeaconToMissionPlanner(const PixhawkDataBeacon &d) {
   bool oldTelemetryContext = mpTelemetryOutputContext;
   mpTelemetryOutputContext = true;
 
@@ -141,7 +141,7 @@ static inline void sendTelemetryBeaconToMissionPlanner(const PixhawkDataBeacon &
   mpTelemetryOutputContext = oldTelemetryContext;
 }
 
-static inline void sendSyntheticHeartbeatToMissionPlannerIfNeeded() {
+inline void sendSyntheticHeartbeatToMissionPlannerIfNeeded() {
   bool oldTelemetryContext = mpTelemetryOutputContext;
   mpTelemetryOutputContext = true;
   if (!latestBeaconValid || !isUplinkFreshForMissionPlanner()) { mpTelemetryOutputContext = oldTelemetryContext; return; }

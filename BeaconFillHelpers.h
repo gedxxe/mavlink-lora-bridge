@@ -13,40 +13,40 @@ extern PixhawkDataFull pixDataFull;
 #define PI 3.14159265358979323846f
 #endif
 
-static inline int16_t clampInt16FromLong(long v) {
+inline int16_t clampInt16FromLong(long v) {
   if (v > 32767L) return 32767;
   if (v < -32768L) return -32768;
   return (int16_t)v;
 }
 
-static inline uint16_t clampUint16FromFloat(float v) {
+inline uint16_t clampUint16FromFloat(float v) {
   if (v <= 0.0f) return 0;
   if (v >= 65535.0f) return 65535;
   return (uint16_t)(v + 0.5f);
 }
 
-static inline int16_t clampInt16FromFloat(float v) {
+inline int16_t clampInt16FromFloat(float v) {
   if (v >= 32767.0f) return 32767;
   if (v <= -32768.0f) return -32768;
   return (int16_t)(v >= 0.0f ? (v + 0.5f) : (v - 0.5f));
 }
 
-static inline int16_t radToCentiDegInt16(float rad) {
+inline int16_t radToCentiDegInt16(float rad) {
   float cd = rad * 18000.0f / PI;
   return clampInt16FromFloat(cd);
 }
 
-static inline int16_t mmToDecimeterInt16(int32_t mm) {
+inline int16_t mmToDecimeterInt16(int32_t mm) {
   long dm = (mm >= 0) ? ((long)mm + 50L) / 100L : ((long)mm - 50L) / 100L;
   return clampInt16FromLong(dm);
 }
 
-static inline uint8_t clampPctToU8(uint16_t v) {
+inline uint8_t clampPctToU8(uint16_t v) {
   if (v > 100) return 100;
   return (uint8_t)v;
 }
 
-static inline void fillBeacon(PixhawkDataBeacon &d) {
+inline void fillBeacon(PixhawkDataBeacon &d) {
   memset(&d, 0, sizeof(d));
 
   // ── Validity flags ──────────────────────────────

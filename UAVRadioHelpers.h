@@ -45,15 +45,15 @@ extern int lowCount;
 // Forward declaration of queue flush in UAV sketch
 void flushLowQueue();
 
-static inline float estimateLoRaToA_ms(uint8_t sf, float bwHz, uint8_t crDen, uint16_t payloadBytes) {
+inline float estimateLoRaToA_ms(uint8_t sf, float bwHz, uint8_t crDen, uint16_t payloadBytes) {
   return estimateLoRaToA_ms(sf, bwHz, crDen, payloadBytes, LORA_PREAMBLE_SYMBOLS);
 }
 
-static inline float estimatePacketEnergy_mJ(uint8_t tpDbm, float toaMs) {
+inline float estimatePacketEnergy_mJ(uint8_t tpDbm, float toaMs) {
   return estimatePacketEnergy_mJ(tpDbm, toaMs, METRICS_SUPPLY_VOLTAGE);
 }
 
-static inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
+inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
   radio.standby(); delay(1);
   radio.setBandwidth(LORA_BW_KHZ);
   radio.setSpreadingFactor(sf);
@@ -65,7 +65,7 @@ static inline void applyRadioSettings(uint8_t sf, uint8_t tp) {
   Serial.println(tp);
 }
 
-static inline void hardResetLoRaUAV() {
+inline void hardResetLoRaUAV() {
   pinMode(LORA_RST, OUTPUT);
   digitalWrite(LORA_RST, LOW);
   delay(25);
@@ -73,7 +73,7 @@ static inline void hardResetLoRaUAV() {
   delay(120);
 }
 
-static inline bool initLoRaRadioUAV() {
+inline bool initLoRaRadioUAV() {
   for (uint8_t i = 0; i < LORA_INIT_RETRY_COUNT; i++) {
     hardResetLoRaUAV();
     delay(LORA_INIT_RETRY_DELAY_MS);
@@ -94,7 +94,7 @@ static inline bool initLoRaRadioUAV() {
   return false;
 }
 
-static inline void softRecoverRadio(bool flushLow) {
+inline void softRecoverRadio(bool flushLow) {
   radio.standby(); delay(2); radio.sleep(); delay(10);
   applyRadioSettings(currentSF, currentTP);
   if (flushLow && !paramSyncActive && lowCount > 16) flushLowQueue();

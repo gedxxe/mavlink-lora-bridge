@@ -1,6 +1,9 @@
 #include <SPI.h>
 #include "TelemetryProtoFix.h"
 #include "BeaconDecodeHelpers.h"
+#include "GCSRadioHelpers.h"
+#include "GCSCommandQueue.h"
+#include "GCCalibHelpers.h"
 #include <RadioLib.h>
 #include <MAVLink_ardupilotmega.h>
 #include <math.h>
@@ -461,14 +464,9 @@ void parseAndReencodeRawToMissionPlanner(const MavlinkRawPacket &raw);
 void parseAndReencodeParamBulkToMissionPlanner(const ParamBulkPacket &pkt);
 uint16_t extractFlightActionCommandIdFromRawPacket(const MavlinkRawPacket &raw);
 bool sendConfigAck(const ConfigProposalPacket &proposal);
-bool peekCompactCommandPacket(CompactCommandQueueItem &item);
-void popCompactCommandPacket();
-void flushCompactCommandQueue();
-bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck);
 bool shouldProxyAckForCommand(uint16_t command);
 unsigned long paramSyncNoValueExitForSF(uint8_t sf);
 unsigned long paramSyncIdleExitForSF(uint8_t sf);
-void startCalibrationConfigMode();
 void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, uint8_t profile, uint8_t mode, uint16_t latency_x100, uint16_t packetSize, const TelemetryMeta &meta);
 
 
@@ -1041,10 +1039,6 @@ bool commandPriorityActive() {
   return commandModeUntilMs != 0 && millis() < commandModeUntilMs;
 }
 
-void flushCompactCommandQueue();
-bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck);
-bool peekCompactCommandPacket(CompactCommandQueueItem &item);
-void popCompactCommandPacket();
 
 void beginFlightCommandPriorityMode() {
   flightCommandRxCount++;

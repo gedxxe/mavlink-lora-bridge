@@ -41,7 +41,7 @@ unsigned long ackTimeoutForSF(uint8_t sf);
 #endif
 
 #ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-static inline void cacheMagCalProgressForGCS(const mavlink_message_t &msg) {
+inline void cacheMagCalProgressForGCS(const mavlink_message_t &msg) {
   mavlink_mag_cal_progress_t p;
   mavlink_msg_mag_cal_progress_decode(&msg, &p);
   uint8_t id = p.compass_id;
@@ -51,7 +51,7 @@ static inline void cacheMagCalProgressForGCS(const mavlink_message_t &msg) {
   magCalProgressCachedCount++;
 }
 
-static inline bool hasPendingMagCalProgress() {
+inline bool hasPendingMagCalProgress() {
   if (!calibrationConfigModeActive()) return false;
   for (uint8_t i = 0; i < MAG_CAL_COMPASS_MAX; i++) {
     if (magCalProgressPending[i]) return true;
@@ -59,7 +59,7 @@ static inline bool hasPendingMagCalProgress() {
   return false;
 }
 
-static inline bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *sentIds, uint8_t &sentCount) {
+inline bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *sentIds, uint8_t &sentCount) {
   memset(&raw, 0, sizeof(raw));
   initHeader(raw.hdr, PKT_MAVLINK_RAW);
   raw.len = 0;
@@ -87,7 +87,7 @@ static inline bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *
   return true;
 }
 
-static inline bool sendPendingMagCalProgressToGCS() {
+inline bool sendPendingMagCalProgressToGCS() {
   if (!hasPendingMagCalProgress()) return false;
   unsigned long now = millis();
   if (now - lastMagCalProgressTxMs < MAG_CAL_PROGRESS_TX_INTERVAL_MS) return false;

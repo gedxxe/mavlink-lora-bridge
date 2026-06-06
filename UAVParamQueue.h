@@ -22,19 +22,19 @@ extern uint8_t currentSF;
 // Functions for parameter bulk transfer
 void flushLowQueue();
 
-static inline bool peekParamBulkPacket(ParamBulkPacket &pkt) {
+inline bool peekParamBulkPacket(ParamBulkPacket &pkt) {
   if (paramBulkCount == 0) return false;
   pkt = paramBulkQueue[paramBulkTail];
   return true;
 }
 
-static inline void popParamBulkPacket() {
+inline void popParamBulkPacket() {
   if (paramBulkCount == 0) return;
   paramBulkTail = (paramBulkTail + 1) % PARAM_BULK_QUEUE_SIZE;
   paramBulkCount--;
 }
 
-static inline bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid) {
+inline bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid) {
   if (paramBulkCount >= PARAM_BULK_QUEUE_SIZE) {
     flushLowQueue();
   }
@@ -56,14 +56,14 @@ static inline bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid) {
   return true;
 }
 
-static inline uint8_t paramBulkRecordsLimitForCurrentSF() {
+inline uint8_t paramBulkRecordsLimitForCurrentSF() {
   if (currentSF == 8) return 4;
   if (currentSF == 9) return 3;
   if (currentSF >= 10) return 0;
   return PARAM_BULK_MAX_RECORDS;
 }
 
-static inline bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
+inline bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
   if (msg.msgid != MAVLINK_MSG_ID_PARAM_VALUE) return false;
   mavlink_param_value_t pv;
   mavlink_msg_param_value_decode(&msg, &pv);

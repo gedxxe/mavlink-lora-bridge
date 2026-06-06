@@ -6,6 +6,9 @@
 #include <EEPROM.h>
 #include <stddef.h>
 #include "TelemetryProtoFix.h"
+#include "UAVRadioHelpers.h"
+#include "UAVParamQueue.h"
+#include "UAVCalibHelpers.h"
 
 #ifndef RADIOLIB_ERR_UNKNOWN
 #define RADIOLIB_ERR_UNKNOWN -999
@@ -473,16 +476,7 @@ bool peekHighRawPacket(MavlinkRawPacket &pkt);
 bool peekLowRawPacket(MavlinkRawPacket &pkt);
 void pushExistingHighRawPacket(const MavlinkRawPacket &pkt);
 bool rawPacketContainsCommandAck(const MavlinkRawPacket &pkt, uint16_t command);
-bool peekParamBulkPacket(ParamBulkPacket &pkt);
-void popParamBulkPacket();
-bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid);
-bool appendParamToBulk(const mavlink_message_t &msg);
-#ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-void cacheMagCalProgressForGCS(const mavlink_message_t &msg);
-bool hasPendingMagCalProgress();
-bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *sentIds, uint8_t &sentCount);
-bool sendPendingMagCalProgressToGCS();
-#endif
+
 
 PixhawkDataFull pixDataFull;
 MavlinkRawPacket highQueue[HIGH_QUEUE_SIZE];
