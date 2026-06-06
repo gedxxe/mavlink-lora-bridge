@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stddef.h>
-#include "TelemetryProtoFix.h"
+// TelemetryProtoFix.h already included at line 2 (duplicate removed)
 #ifndef UINT8_MAX
 #define UINT8_MAX 255
 #endif
@@ -434,53 +434,16 @@ SX1278 radio = new Module(LORA_SS, LORA_DIO0, LORA_RST, LORA_DIO1, spi, spiSetti
 #define GCS_Serial Serial
 HardwareSerial MetricsSerial(2);
 
-#define VALID_HEARTBEAT   (1UL << 0)
-#define VALID_ATTITUDE    (1UL << 1)
-#define VALID_GLOBAL_POS  (1UL << 2)
-#define VALID_VFR_HUD     (1UL << 3)
-#define VALID_SYS_STATUS  (1UL << 4)
-#define VALID_EKF         (1UL << 5)
-#define VALID_GPS_RAW     (1UL << 6)
+// VALID_* flag defines moved to TelemetryProtoFix.h (VALID_HEARTBEAT..VALID_LOCAL_VEL, VALID2_*)
 
-// ================= Struktur data (harus sinkron dengan UAV) =================
-// Shared struct definitions moved to TelemetryProtoFix.h
+// ================= Struct + beacon metric helpers =================
+// OTA struct definitions live in TelemetryProtoFix.h.
+// updateRemoteMetricFromBeacon78 / downlinkAckQualityPercentFromUavMeta /
+// latestRemoteRssiByteOrZero are defined AFTER the global variable block below.
 
-static inline void updateRemoteMetricFromBeacon78(const TelemetryBeaconPacket &pkt) {
-  lastRemoteRssiQ = pkt.remote_rssi_q;
-  lastRemoteSnrX2 = pkt.remote_snr_x2;
-  if (lastRemoteRssiQ > 0 && lastRemoteSnrX2 != -128) lastRemoteMetricMs = millis();
-}
-
-static inline int downlinkAckQualityPercentFromUavMeta() {
-  if (latestUavMetaMs == 0 || millis() - latestUavMetaMs > 15000UL) return 0;
-  int ackPct = constrain((int)latestUavCntAck * 10, 0, 100);
-  if (latestUavFailStreak >= MP_BIDIR_FAIL_STREAK_THRESHOLD) {
-    ackPct = min(ackPct, 20);
-  } else if (latestUavFailStreak > 0) {
-    int cap = 100 - ((int)latestUavFailStreak * 15);
-    ackPct = min(ackPct, constrain(cap, 35, 100));
-  }
-  if (latestUavFailStreak == 0 && latestUavSuccessStreak >= 10 && latestUavCntAck >= 10) ackPct = 100;
-  return constrain(ackPct, 0, 100);
-}
-
-static inline uint8_t latestRemoteRssiByteOrZero() {
-#if !MP_REPORT_REMOTE_RSSI_TO_MP
-  return UINT8_MAX;
-#else
-  if (lastRemoteRssiQ == 0 || lastRemoteSnrX2 == -128 || millis() - lastRemoteMetricMs > 15000UL) {
-    return UINT8_MAX;
-  }
-  float remoteRssiDbm = loraQ254ToRssiDbm(lastRemoteRssiQ);
-  float remoteSnrDb = ((float)lastRemoteSnrX2) / 2.0f;
-  int rfPct = loraRfLinkMarginPercent(remoteRssiDbm, remoteSnrDb);
-  return (uint8_t)constrain((int)((rfPct * 254UL) / 100UL), 1, 254);
-#endif
-}
-
-#define TELEMETRY_BEACON_PACKET_BYTES ((uint16_t)sizeof(TelemetryBeaconPacket))
-#define TELEMETRY_BEACON_APP_PAYLOAD_BYTES ((uint16_t)(sizeof(TelemetryBeaconPacket) - sizeof(PacketHeader)))
-#define TELEMETRY_BEACON_SENSOR_PAYLOAD_BYTES ((uint16_t)sizeof(PixhawkDataBeacon))
+#define TELEMETRY_BEACON_PACKET_BYTES          ((uint16_t)sizeof(TelemetryBeaconPacket))
+#define TELEMETRY_BEACON_APP_PAYLOAD_BYTES     ((uint16_t)(sizeof(TelemetryBeaconPacket) - sizeof(PacketHeader)))
+#define TELEMETRY_BEACON_SENSOR_PAYLOAD_BYTES  ((uint16_t)sizeof(PixhawkDataBeacon))
 
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
@@ -697,6 +660,44 @@ uint8_t lastRemoteRssiQ = 0;
 int8_t lastRemoteSnrX2 = -128;
 unsigned long lastRemoteMetricMs = 0;
 
+// ---------------------------------------------------------------------------
+// Beacon metric helpers — must appear AFTER their global dependencies above.
+// ---------------------------------------------------------------------------
+
+static inline void updateRemoteMetricFromBeacon78(const TelemetryBeaconPacket &pkt) {
+  lastRemoteRssiQ = pkt.remote_rssi_q;
+  lastRemoteSnrX2 = pkt.remote_snr_x2;
+  if (lastRemoteRssiQ > 0 && lastRemoteSnrX2 != -128) lastRemoteMetricMs = millis();
+}
+
+static inline int downlinkAckQualityPercentFromUavMeta() {
+  if (latestUavMetaMs == 0 || millis() - latestUavMetaMs > 15000UL) return 0;
+  int ackPct = constrain((int)latestUavCntAck * 10, 0, 100);
+  if (latestUavFailStreak >= MP_BIDIR_FAIL_STREAK_THRESHOLD) {
+    ackPct = min(ackPct, 20);
+  } else if (latestUavFailStreak > 0) {
+    int cap = 100 - ((int)latestUavFailStreak * 15);
+    ackPct = min(ackPct, constrain(cap, 35, 100));
+  }
+  if (latestUavFailStreak == 0 && latestUavSuccessStreak >= 10 && latestUavCntAck >= 10) ackPct = 100;
+  return constrain(ackPct, 0, 100);
+}
+
+static inline uint8_t latestRemoteRssiByteOrZero() {
+#if !MP_REPORT_REMOTE_RSSI_TO_MP
+  return UINT8_MAX;
+#else
+  if (lastRemoteRssiQ == 0 || lastRemoteSnrX2 == -128 ||
+      millis() - lastRemoteMetricMs > 15000UL) {
+    return UINT8_MAX;
+  }
+  float remoteRssiDbm = loraQ254ToRssiDbm(lastRemoteRssiQ);
+  float remoteSnrDb   = ((float)lastRemoteSnrX2) / 2.0f;
+  int rfPct = loraRfLinkMarginPercent(remoteRssiDbm, remoteSnrDb);
+  return (uint8_t)constrain((int)((rfPct * 254UL) / 100UL), 1, 254);
+#endif
+}
+
 // ================= Forward declarations =================
 void flushLowCommandQueue();
 void flushHighCommandQueue();
@@ -749,9 +750,7 @@ bool validatePacket(const uint8_t *buf, size_t len) {
   return validatePacketInternal(buf, len, invalidLengthDrop, invalidProtocolDrop, invalidCrcDrop);
 }
 
-static inline float loraNominalBitrateKbps(uint8_t sf, float bwHz, uint8_t crDen) {
-  return ((float)sf * bwHz * (4.0f / (float)crDen)) / (powf(2.0f, sf) * 1000.0f);
-}
+// loraNominalBitrateKbps defined in TelemetryProtoFix.h (duplicate removed)
 
 unsigned long rxTimeoutForSF(uint8_t sf) {
   // Shorter polling windows keep Mission Planner command bytes from waiting
@@ -2695,17 +2694,61 @@ void sendTelemetryBeaconToMissionPlanner(const PixhawkDataBeacon &d) {
   }
   sendHeartbeatFromData(sysid, compid, MAV_TYPE_HEXAROTOR, MAV_AUTOPILOT_ARDUPILOTMEGA, hbBaseMode, hbCustomMode, hbSystemStatus);
   if (d.valid_flags & VALID_ATTITUDE) sendAttitudeFromData(sysid, compid, centiDegToRad(d.roll_cd), centiDegToRad(d.pitch_cd), centiDegToRad(d.yaw_cd), 0, 0, 0);
-  if (d.valid_flags & VALID_GLOBAL_POS) sendGlobalPositionFromData(sysid, compid, d.lat, d.lon, decimeterToMillimeter(d.gps.alt_dm), decimeterToMillimeter(d.relative_alt_dm), 0, 0, 0, d.heading);
+  if (d.valid_flags & VALID_GLOBAL_POS) {
+    // Pass real NED velocity from beacon (vx_cms/vy_cms/vz_cms are cm/s NED)
+    sendGlobalPositionFromData(sysid, compid,
+                               d.lat, d.lon,
+                               decimeterToMillimeter(d.gps.alt_dm),
+                               decimeterToMillimeter(d.relative_alt_dm),
+                               d.vx_cms, d.vy_cms, d.vz_cms, d.heading);
+  }
   if (d.valid_flags & VALID_GPS_RAW) sendGpsRawFromBeacon(sysid, compid, d);
   if (d.valid_flags & VALID_SYS_STATUS) sendSysStatusFromData(sysid, compid, d.voltage_battery, d.current_battery, d.battery_remaining);
-  float airspeed_ms = d.airspeed_cms / 100.0f;
+  float airspeed_ms    = d.airspeed_cms   / 100.0f;
   float groundspeed_ms = d.groundspeed_cms / 100.0f;
-  int16_t heading_deg = (int16_t)(d.heading / 100);
-  float climb_ms = d.climb_cms / 100.0f;
+  int16_t heading_deg  = (int16_t)(d.heading / 100);
+  float climb_ms       = d.climb_cms / 100.0f;
   sendVfrHudFromData(sysid, compid, airspeed_ms, groundspeed_ms, heading_deg, d.throttle, climb_ms);
 #ifdef MAVLINK_MSG_ID_EKF_STATUS_REPORT
   if (d.valid_flags & VALID_EKF) sendEkfStatusFromData(sysid, compid, d.ekf_flags);
 #endif
+
+#ifdef MAVLINK_MSG_ID_VIBRATION
+  // Reconstruct VIBRATION message from compacted beacon fields
+  if (d.valid_flags2 & VALID2_VIBRATION) {
+    mavlink_vibration_t vib = {};
+    vib.time_usec   = (uint64_t)millis() * 1000ULL;
+    vib.vibration_x = (float)d.vibe_x_x100 / 100.0f;
+    vib.vibration_y = (float)d.vibe_y_x100 / 100.0f;
+    vib.vibration_z = (float)d.vibe_z_x100 / 100.0f;
+    vib.clipping_0  = d.accel_clip;   // total clip count packed into clipping_0
+    vib.clipping_1  = 0;
+    vib.clipping_2  = 0;
+    mavlink_msg_vibration_encode(sysid, compid, &msg_out, &vib);
+    sendMavlinkMessageToMissionPlanner(msg_out);
+  }
+#endif
+
+#ifdef MAVLINK_MSG_ID_RC_CHANNELS
+  // Reconstruct RC_CHANNELS message from compacted channel percentage bytes
+  if (d.valid_flags2 & VALID2_RC_CHANNELS) {
+    mavlink_rc_channels_t rc = {};
+    rc.time_boot_ms = millis();
+    rc.chancount    = 16;
+    rc.chan1_raw  = rcPctToRaw(d.rc_ch_pct[0]);  rc.chan2_raw  = rcPctToRaw(d.rc_ch_pct[1]);
+    rc.chan3_raw  = rcPctToRaw(d.rc_ch_pct[2]);  rc.chan4_raw  = rcPctToRaw(d.rc_ch_pct[3]);
+    rc.chan5_raw  = rcPctToRaw(d.rc_ch_pct[4]);  rc.chan6_raw  = rcPctToRaw(d.rc_ch_pct[5]);
+    rc.chan7_raw  = rcPctToRaw(d.rc_ch_pct[6]);  rc.chan8_raw  = rcPctToRaw(d.rc_ch_pct[7]);
+    rc.chan9_raw  = rcPctToRaw(d.rc_ch_pct[8]);  rc.chan10_raw = rcPctToRaw(d.rc_ch_pct[9]);
+    rc.chan11_raw = rcPctToRaw(d.rc_ch_pct[10]); rc.chan12_raw = rcPctToRaw(d.rc_ch_pct[11]);
+    rc.chan13_raw = rcPctToRaw(d.rc_ch_pct[12]); rc.chan14_raw = rcPctToRaw(d.rc_ch_pct[13]);
+    rc.chan15_raw = rcPctToRaw(d.rc_ch_pct[14]); rc.chan16_raw = rcPctToRaw(d.rc_ch_pct[15]);
+    rc.rssi = 255;  // not available over LoRa bridge
+    mavlink_msg_rc_channels_encode(sysid, compid, &msg_out, &rc);
+    sendMavlinkMessageToMissionPlanner(msg_out);
+  }
+#endif
+
   // RADIO_STATUS dikirim setiap beacon valid agar indikator Telemetry Signal Mission Planner
   // langsung fresh, bukan menunggu timer periodik. Ini tidak menambah beban LoRa karena hanya USB serial GCS->MP.
   sendRadioStatusToMissionPlanner(sysid, compid);

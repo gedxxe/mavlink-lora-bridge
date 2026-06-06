@@ -399,48 +399,66 @@ float lastGcsDownlinkRssi = -125.0f;
 float lastGcsDownlinkSnr = -64.0f;
 unsigned long lastGcsDownlinkMetricMs = 0;
 
-#define VALID_HEARTBEAT   (1UL << 0)
-#define VALID_ATTITUDE    (1UL << 1)
-#define VALID_GLOBAL_POS  (1UL << 2)
-#define VALID_VFR_HUD     (1UL << 3)
-#define VALID_SYS_STATUS  (1UL << 4)
-#define VALID_EKF         (1UL << 5)
-#define VALID_GPS_RAW     (1UL << 6)
+// VALID_* flag defines moved to TelemetryProtoFix.h (VALID_HEARTBEAT..VALID_LOCAL_VEL, VALID2_*)
+
 
 // ================= Struktur data untuk menyimpan data dari Pixhawk (lengkap) =================
 struct __attribute__((packed)) PixhawkDataFull {
+  // ── Core status ─────────────────────────────────
   uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t mav_type;
-  uint8_t autopilot;
-  uint8_t base_mode;
+  uint8_t  system_id;
+  uint8_t  component_id;
+  uint8_t  mav_type;
+  uint8_t  autopilot;
+  uint8_t  base_mode;
   uint32_t custom_mode;
-  uint8_t system_status;
+  uint8_t  system_status;
+
+  // ── Attitude ────────────────────────────────────
   float roll;
   float pitch;
   float yaw;
   float rollspeed;
   float pitchspeed;
   float yawspeed;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  int32_t relative_alt_mm;
-  int16_t vx;
-  int16_t vy;
-  int16_t vz;
-  uint16_t hdg;
-  float airspeed;
-  float groundspeed;
-  int16_t heading;
-  uint16_t throttle;
-  float climb;
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-  uint16_t ekf_flags;
+
+  // ── Position + NED velocity ──────────────────────
+  int32_t  lat;
+  int32_t  lon;
+  int32_t  alt_mm;
+  int32_t  relative_alt_mm;
+  int16_t  vx;    // NED North velocity, cm/s
+  int16_t  vy;    // NED East  velocity, cm/s
+  int16_t  vz;    // NED Down  velocity, cm/s
+  uint16_t hdg;   // Compass heading, cdeg
+
+  // ── Airdata ─────────────────────────────────────
+  float    airspeed;
+  float    groundspeed;
+  int16_t  heading;   // Heading from VFR_HUD (deg)
+  uint16_t throttle;  // 0-100%
+  float    climb;
+
+  // ── Battery ─────────────────────────────────────
+  uint16_t voltage_battery;   // mV
+  int16_t  current_battery;   // cA
+  int8_t   battery_remaining; // %
+
+  // ── EKF + GPS ───────────────────────────────────
+  uint16_t    ekf_flags;
   GpsRawDataFull gps;
+
+  // ── Vibration [NEW] ─────────────────────────────
+  uint32_t valid_flags2;       // Extended validity bits (mirrors VALID2_* defines)
+  float    vibe_x;             // Vibration X, m/s²
+  float    vibe_y;             // Vibration Y, m/s²
+  float    vibe_z;             // Vibration Z, m/s²
+  uint32_t accel_clip_0;       // Accel clipper count axis 0
+  uint32_t accel_clip_1;       // Accel clipper count axis 1
+  uint32_t accel_clip_2;       // Accel clipper count axis 2
+
+  // ── RC Channels [NEW] ───────────────────────────
+  uint16_t rc_channels[16];   // Raw PWM µs, channels 1-16
 };
 
 
@@ -1219,17 +1237,21 @@ void requestMessageInterval(uint32_t messageId, int32_t intervalUs) {
 
 void configurePixhawkMessageIntervalsNormal() {
   if (!STREAM_CONFIG_ENABLE) return;
-  requestMessageInterval(MAVLINK_MSG_ID_HEARTBEAT, 1000000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_ATTITUDE, 250000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_HEARTBEAT,          1000000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_ATTITUDE,            250000L); delay(8);
   requestMessageInterval(MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 500000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_VFR_HUD, 500000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_GPS_RAW_INT, 1000000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_SYS_STATUS, 1000000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_VFR_HUD,             500000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_GPS_RAW_INT,        1000000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_SYS_STATUS,         1000000L); delay(8);
+#ifdef MAVLINK_MSG_ID_VIBRATION
+  // Request VIBRATION at 2 Hz — compact enough for 109-byte beacon packing
+  requestMessageInterval(MAVLINK_MSG_ID_VIBRATION,           500000L); delay(8);
+#endif
 #if MOTOR_MONITOR_ENABLE
   requestMessageInterval(MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, SERVO_OUTPUT_MONITOR_INTERVAL_US); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_RC_CHANNELS, RC_CHANNELS_MONITOR_INTERVAL_US); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_RC_CHANNELS,      RC_CHANNELS_MONITOR_INTERVAL_US); delay(8);
 #ifdef MAVLINK_MSG_ID_RC_CHANNELS_RAW
-  requestMessageInterval(MAVLINK_MSG_ID_RC_CHANNELS_RAW, RC_CHANNELS_MONITOR_INTERVAL_US); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_RC_CHANNELS_RAW,  RC_CHANNELS_MONITOR_INTERVAL_US); delay(8);
 #endif
 #ifdef MAVLINK_MSG_ID_ACTUATOR_OUTPUT_STATUS
   requestMessageInterval(MAVLINK_MSG_ID_ACTUATOR_OUTPUT_STATUS, ACTUATOR_MONITOR_INTERVAL_US); delay(8);
@@ -1728,6 +1750,8 @@ void updateTelemetryFromPixhawk(const mavlink_message_t &msg) {
       pixDataFull.lat = gp.lat; pixDataFull.lon = gp.lon; pixDataFull.alt_mm = gp.alt;
       pixDataFull.relative_alt_mm = gp.relative_alt; pixDataFull.vx = gp.vx; pixDataFull.vy = gp.vy;
       pixDataFull.vz = gp.vz; pixDataFull.hdg = gp.hdg; pixDataFull.valid_flags |= VALID_GLOBAL_POS;
+      // vx/vy/vz present whenever GLOBAL_POSITION_INT is valid
+      pixDataFull.valid_flags |= VALID_LOCAL_VEL;
       break;
     }
     case MAVLINK_MSG_ID_GPS_RAW_INT: {
@@ -1756,6 +1780,36 @@ void updateTelemetryFromPixhawk(const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_EKF_STATUS_REPORT: {
       mavlink_ekf_status_report_t ekf; mavlink_msg_ekf_status_report_decode(&msg, &ekf);
       pixDataFull.ekf_flags = ekf.flags; pixDataFull.valid_flags |= VALID_EKF;
+      break;
+    }
+#endif
+#ifdef MAVLINK_MSG_ID_VIBRATION
+    // MAVLink #241 VIBRATION: vibration levels and accel clipping counts
+    case MAVLINK_MSG_ID_VIBRATION: {
+      mavlink_vibration_t vib; mavlink_msg_vibration_decode(&msg, &vib);
+      pixDataFull.vibe_x       = vib.vibration_x;
+      pixDataFull.vibe_y       = vib.vibration_y;
+      pixDataFull.vibe_z       = vib.vibration_z;
+      pixDataFull.accel_clip_0 = vib.clipping_0;
+      pixDataFull.accel_clip_1 = vib.clipping_1;
+      pixDataFull.accel_clip_2 = vib.clipping_2;
+      pixDataFull.valid_flags2 |= VALID2_VIBRATION;
+      break;
+    }
+#endif
+#ifdef MAVLINK_MSG_ID_RC_CHANNELS
+    // MAVLink #65 RC_CHANNELS: radio control channel input values
+    case MAVLINK_MSG_ID_RC_CHANNELS: {
+      mavlink_rc_channels_t rcc; mavlink_msg_rc_channels_decode(&msg, &rcc);
+      pixDataFull.rc_channels[0]  = rcc.chan1_raw;  pixDataFull.rc_channels[1]  = rcc.chan2_raw;
+      pixDataFull.rc_channels[2]  = rcc.chan3_raw;  pixDataFull.rc_channels[3]  = rcc.chan4_raw;
+      pixDataFull.rc_channels[4]  = rcc.chan5_raw;  pixDataFull.rc_channels[5]  = rcc.chan6_raw;
+      pixDataFull.rc_channels[6]  = rcc.chan7_raw;  pixDataFull.rc_channels[7]  = rcc.chan8_raw;
+      pixDataFull.rc_channels[8]  = rcc.chan9_raw;  pixDataFull.rc_channels[9]  = rcc.chan10_raw;
+      pixDataFull.rc_channels[10] = rcc.chan11_raw; pixDataFull.rc_channels[11] = rcc.chan12_raw;
+      pixDataFull.rc_channels[12] = rcc.chan13_raw; pixDataFull.rc_channels[13] = rcc.chan14_raw;
+      pixDataFull.rc_channels[14] = rcc.chan15_raw; pixDataFull.rc_channels[15] = rcc.chan16_raw;
+      pixDataFull.valid_flags2 |= VALID2_RC_CHANNELS;
       break;
     }
 #endif
@@ -2227,32 +2281,78 @@ static inline uint8_t clampPctToU8(uint16_t v) {
 
 void fillBeacon(PixhawkDataBeacon &d) {
   memset(&d, 0, sizeof(d));
-  d.valid_flags = (uint8_t)(pixDataFull.valid_flags & 0xFF);
-  d.system_id = pixDataFull.system_id;
-  d.component_id = pixDataFull.component_id;
-  d.base_mode = pixDataFull.base_mode;
-  d.custom_mode = pixDataFull.custom_mode;
+
+  // ── Validity flags ──────────────────────────────
+  d.valid_flags  = (uint8_t)(pixDataFull.valid_flags & 0xFF);
+  d.valid_flags2 = (uint8_t)(pixDataFull.valid_flags2 & 0xFF);
+
+  // ── Core status ─────────────────────────────────
+  d.system_id     = pixDataFull.system_id;
+  d.component_id  = pixDataFull.component_id;
+  d.base_mode     = pixDataFull.base_mode;
+  d.custom_mode   = pixDataFull.custom_mode;
   d.system_status = pixDataFull.system_status;
-  d.roll_cd = radToCentiDegInt16(pixDataFull.roll);
+
+  // ── Attitude ────────────────────────────────────
+  d.roll_cd  = radToCentiDegInt16(pixDataFull.roll);
   d.pitch_cd = radToCentiDegInt16(pixDataFull.pitch);
-  d.yaw_cd = radToCentiDegInt16(pixDataFull.yaw);
-  d.lat = pixDataFull.lat;
-  d.lon = pixDataFull.lon;
+  d.yaw_cd   = radToCentiDegInt16(pixDataFull.yaw);
+
+  // ── Position ────────────────────────────────────
+  d.lat             = pixDataFull.lat;
+  d.lon             = pixDataFull.lon;
   d.relative_alt_dm = mmToDecimeterInt16(pixDataFull.relative_alt_mm);
-  d.voltage_battery = pixDataFull.voltage_battery;
-  d.current_battery = pixDataFull.current_battery;
+
+  // ── Battery ─────────────────────────────────────
+  d.voltage_battery   = pixDataFull.voltage_battery;
+  d.current_battery   = pixDataFull.current_battery;
   d.battery_remaining = pixDataFull.battery_remaining;
-  d.airspeed_cms = clampUint16FromFloat(pixDataFull.airspeed * 100.0f);
+
+  // ── Airdata ─────────────────────────────────────
+  d.airspeed_cms    = clampUint16FromFloat(pixDataFull.airspeed * 100.0f);
   d.groundspeed_cms = clampUint16FromFloat(pixDataFull.groundspeed * 100.0f);
-  d.heading = clampUint16FromFloat((float)pixDataFull.heading * 100.0f);
-  d.climb_cms = clampInt16FromFloat(pixDataFull.climb * 100.0f);
-  d.throttle = clampPctToU8(pixDataFull.throttle);
-  d.ekf_flags = pixDataFull.ekf_flags;
-  d.gps.fix_type = pixDataFull.gps.fix_type;
-  d.gps.satellites_visible = pixDataFull.gps.satellites_visible;
-  d.gps.alt_dm = mmToDecimeterInt16(pixDataFull.gps.alt_mm);
-  d.gps.eph = pixDataFull.gps.eph;
-  d.gps.epv = pixDataFull.gps.epv;
+  d.heading         = clampUint16FromFloat((float)pixDataFull.heading * 100.0f);
+  d.climb_cms       = clampInt16FromFloat(pixDataFull.climb * 100.0f);
+  d.throttle        = clampPctToU8(pixDataFull.throttle);
+
+  // ── EKF + GPS ───────────────────────────────────
+  d.ekf_flags               = pixDataFull.ekf_flags;
+  d.gps.fix_type            = pixDataFull.gps.fix_type;
+  d.gps.satellites_visible  = pixDataFull.gps.satellites_visible;
+  d.gps.alt_dm              = mmToDecimeterInt16(pixDataFull.gps.alt_mm);
+  d.gps.eph                 = pixDataFull.gps.eph;
+  d.gps.epv                 = pixDataFull.gps.epv;
+
+  // ── NED Velocity [NEW] ───────────────────────────
+  if (pixDataFull.valid_flags & VALID_LOCAL_VEL) {
+    d.vx_cms = pixDataFull.vx;   // GLOBAL_POSITION_INT vx is already in cm/s
+    d.vy_cms = pixDataFull.vy;
+    d.vz_cms = pixDataFull.vz;
+  }
+
+  // ── Vibration [NEW] ─────────────────────────────
+  if (pixDataFull.valid_flags2 & VALID2_VIBRATION) {
+    // Clamp float vibe to int16_t x100 range (±327.67 m/s²)
+    auto clampVibe = [](float v) -> int16_t {
+      float s = v * 100.0f;
+      if (s >  32767.0f) return  32767;
+      if (s < -32768.0f) return -32768;
+      return (int16_t)(s >= 0.0f ? (s + 0.5f) : (s - 0.5f));
+    };
+    d.vibe_x_x100 = clampVibe(pixDataFull.vibe_x);
+    d.vibe_y_x100 = clampVibe(pixDataFull.vibe_y);
+    d.vibe_z_x100 = clampVibe(pixDataFull.vibe_z);
+    // Sum all three accel clip counters into a single uint16_t
+    uint32_t totalClip = pixDataFull.accel_clip_0 + pixDataFull.accel_clip_1 + pixDataFull.accel_clip_2;
+    d.accel_clip = (totalClip > 65535UL) ? 65535U : (uint16_t)totalClip;
+  }
+
+  // ── RC Channels 1-16 [NEW] ──────────────────────
+  if (pixDataFull.valid_flags2 & VALID2_RC_CHANNELS) {
+    for (uint8_t i = 0; i < 16; i++) {
+      d.rc_ch_pct[i] = rcRawToPct(pixDataFull.rc_channels[i]);
+    }
+  }
 }
 
 bool sendTelemetryPacketToGCS() {
