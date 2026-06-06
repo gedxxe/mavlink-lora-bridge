@@ -146,7 +146,8 @@ uint16_t lastParamCount = 0;
 //   Lower  → faster sync, but more UART/LoRa pressure (risk: queue overflow).
 //   Higher → slower sync, but very stable link (risk: MP may time out at >30 s).
 //   Recommended range: 80–250 ms. Default: 120 ms (safe for SF7–SF9 at 500 kHz BW).
-#define ASYNC_PARAM_POLL_INTERVAL_MS      120UL
+#define ASYNC_PARAM_POLL_INTERVAL_MS      80UL
+
 
 // [Tunable] ASYNC_PARAM_POLL_QUEUE_HEADROOM — minimum free slots in paramBulkQueue
 // required before the next PARAM_REQUEST_READ is sent.
@@ -897,8 +898,8 @@ void updateParamSyncTimeout() {
     abortParamSyncRecovery("param_hard_abort_high_sf"); return;
   }
 
-  // Guard penting untuk SF tinggi: jika Mission Planner dibatalkan sebelum PARAM_VALUE pertama
-  // atau Pixhawk tidak mulai mengalirkan parameter, jangan biarkan stream Pixhawk tetap dimatikan.
+  // Crucial guard for high SF: if Mission Planner is cancelled before the first PARAM_VALUE
+  // or Pixhawk does not start streaming parameters, do not leave Pixhawk streams disabled.
   if (paramSyncStartMs > 0 && lastParamValueMs == 0 && now - paramSyncStartMs > paramSyncNoValueExitForSF(currentSF)) {
     abortParamSyncRecovery("no_param_value"); return;
   }
@@ -913,7 +914,8 @@ void updateParamSyncTimeout() {
     if (lastParamValueMs > 0 && now - lastParamValueMs > PARAM_SYNC_DRAIN_MAX_MS) { stopParamSync(); return; }
     return;
   }
-  if (lastParamValueMs > 0 && now - lastParamValueMs > paramSyncIdleExitForSF(currentSF)) { abortParamSyncRecovery("param_idle_fast_restore"); return; }
+  if (lastParamValueMs > 0 && !asyncParamPollActive && now - lastParamValueMs > paramSyncIdleExitForSF(currentSF)) { abortParamSyncRecovery("param_idle_fast_restore"); return; }
+
 }
 
 // =============================================================================
@@ -1017,8 +1019,8 @@ unsigned long ackTimeoutForSF(uint8_t sf) {
 }
 
 unsigned long commandDownlinkTimeoutForSF(uint8_t sf) {
-  // V14: slot downlink tidak lagi dibuka panjang setiap beacon SF tinggi.
-  // Window ini hanya dipakai saat command priority aktif; SF12 tetap memakai ACK-slot terjadwal.
+  // V14: Downlink slot is no longer kept open for a long duration for each high-SF beacon.
+  // This window is only used when command priority is active; SF12 still uses the scheduled ACK-slot.
   if (sf >= 12) return 480UL;
   if (sf == 11) return 620UL;
   if (sf == 10) return 420UL;
@@ -1227,15 +1229,16 @@ void requestMessageInterval(uint32_t messageId, int32_t intervalUs) {
 void configurePixhawkMessageIntervalsNormal() {
   if (!STREAM_CONFIG_ENABLE) return;
   requestMessageInterval(MAVLINK_MSG_ID_HEARTBEAT,          1000000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_ATTITUDE,            250000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 500000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_VFR_HUD,             500000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_GPS_RAW_INT,        1000000L); delay(8);
-  requestMessageInterval(MAVLINK_MSG_ID_SYS_STATUS,         1000000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_ATTITUDE,            200000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 200000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_VFR_HUD,             200000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_GPS_RAW_INT,         500000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_SYS_STATUS,          500000L); delay(8);
 #ifdef MAVLINK_MSG_ID_VIBRATION
-  // Request VIBRATION at 2 Hz — compact enough for 109-byte beacon packing
-  requestMessageInterval(MAVLINK_MSG_ID_VIBRATION,           500000L); delay(8);
+  // Request VIBRATION at 5 Hz (200 ms) — compact enough for 109-byte beacon packing
+  requestMessageInterval(MAVLINK_MSG_ID_VIBRATION,           200000L); delay(8);
 #endif
+
 #if MOTOR_MONITOR_ENABLE
   requestMessageInterval(MAVLINK_MSG_ID_SERVO_OUTPUT_RAW, SERVO_OUTPUT_MONITOR_INTERVAL_US); delay(8);
   requestMessageInterval(MAVLINK_MSG_ID_RC_CHANNELS,      RC_CHANNELS_MONITOR_INTERVAL_US); delay(8);
@@ -1253,8 +1256,9 @@ void configurePixhawkMessageIntervalsNormal() {
 #endif
 #endif
 #ifdef MAVLINK_MSG_ID_EKF_STATUS_REPORT
-  requestMessageInterval(MAVLINK_MSG_ID_EKF_STATUS_REPORT, 1000000L); delay(8);
+  requestMessageInterval(MAVLINK_MSG_ID_EKF_STATUS_REPORT, 500000L); delay(8);
 #endif
+
   streamConfigSentCount++;
 }
 void configurePixhawkMessageIntervalsParamSync() {
@@ -1532,8 +1536,8 @@ void handleParamSet(const mavlink_param_set_t &ps) {
   if (strcmp(param_id, "STATIC_SF") == 0) {
     uint8_t newSF = (uint8_t)ps.param_value;
     if (newSF >= SF_MIN && newSF <= SF_MAX) {
-      // UAV adalah master PHY. Perubahan SF runtime harus dinegosiasikan melalui
-      // CONFIG_PROPOSE/CONFIG_ACK pada SF lama agar GCS ikut pindah ke SF baru.
+      // UAV is the PHY master. Runtime SF changes must be negotiated via
+      // CONFIG_PROPOSE/CONFIG_ACK on the old SF so that GCS also migrates to the new SF.
       EEPROM.write(EEPROM_SF_ADDR, newSF);
       EEPROM.commit();
       proposeConfig(newSF, currentTP);
@@ -1570,6 +1574,10 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         // per index at a safe paced rate.
         suppressCurrentRawToPixhawk = true;
         if (fullParamSyncAllowedAtCurrentSF()) {
+          // Flush Pixhawk RX buffer to clear any stale parameters before starting proxy
+          while (PixhawkSerial.available()) {
+            PixhawkSerial.read();
+          }
           // Learn the requesting sysid/compid so replies are addressed correctly.
           asyncParamPollSysId  = parsedMsg.sysid  ? parsedMsg.sysid  : 255;
           asyncParamPollCompId = parsedMsg.compid ? parsedMsg.compid : MAV_COMP_ID_MISSIONPLANNER;
@@ -1578,7 +1586,7 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
           asyncParamPollIndex   = 0;
           asyncParamTotalCount  = 0;   // will be learned from first PARAM_VALUE response
           asyncParamLastReqMs   = 0;   // force immediate first request
-          asyncParamLastValMs   = 0;
+          asyncParamLastValMs   = millis();
           asyncParamRetryCount  = 0;
           asyncParamPollStartCount++;
           startParamSync();            // engage link mode + queue management
@@ -1601,6 +1609,17 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         } else {
           if (isInteractiveSetupParamId(id)) startCalibrationConfigMode();
           if (fullParamSyncAllowedAtCurrentSF()) startParamSync();
+          // Intercept and handle standard parameter read requests during active async proxy
+          if (asyncParamPollActive) {
+            suppressCurrentRawToPixhawk = true;
+            if (pr.param_index >= 0) {
+              asyncParamPollIndex = pr.param_index;
+              asyncParamLastReqMs = 0;
+              asyncParamRetryCount = 0;
+            } else {
+              suppressCurrentRawToPixhawk = false;
+            }
+          }
         }
       }
       if (parsedMsg.msgid == MAVLINK_MSG_ID_PARAM_SET) {
@@ -1609,7 +1628,7 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         paramWriteAckExpected = true; paramWriteAckUntilMs = millis() + PARAM_WRITE_ACK_WINDOW_MS;
         if (isInteractiveSetupParamId(expectedParamId)) startCalibrationConfigMode();
         // Individual parameter updates bypass full param synchronization and route through high-priority queues.
-        // Tangani perubahan SF
+        // Handle SF change
         handleParamSet(ps);
       }
       if (parsedMsg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
@@ -1620,8 +1639,8 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
           enqueueBridgeStatusText(MAV_SEVERITY_NOTICE, "ARM command forwarded to FC; battery failsafe may disarm");
         }
         if (isSetupCommand((uint16_t)cmd.command)) { calCommandRxCount++; startCalibrationConfigMode(); }
-        // ARM/DISARM dan action command tetap diteruskan sebagai MAVLink raw ke Pixhawk oleh caller.
-        // Retry internal dinonaktifkan agar UAV tidak mengirim COMMAND_LONG balik ke GCS.
+        // ARM/DISARM and action commands are still forwarded as raw MAVLink to Pixhawk by caller.
+        // Internal retries are disabled so UAV does not send COMMAND_LONG back to GCS.
       }
 #ifdef MAVLINK_MSG_ID_COMMAND_INT
       if (parsedMsg.msgid == MAVLINK_MSG_ID_COMMAND_INT) {
@@ -1635,10 +1654,14 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
         // Extended param list also suppressed and proxied via async poll (same logic as standard list).
         suppressCurrentRawToPixhawk = true;
         if (fullParamSyncAllowedAtCurrentSF()) {
+          // Flush Pixhawk RX buffer to clear any stale parameters before starting proxy
+          while (PixhawkSerial.available()) {
+            PixhawkSerial.read();
+          }
           asyncParamPollSysId  = parsedMsg.sysid  ? parsedMsg.sysid  : 255;
           asyncParamPollCompId = parsedMsg.compid ? parsedMsg.compid : MAV_COMP_ID_MISSIONPLANNER;
           asyncParamPollActive = true; asyncParamPollIndex = 0; asyncParamTotalCount = 0;
-          asyncParamLastReqMs = 0; asyncParamLastValMs = 0; asyncParamRetryCount = 0;
+          asyncParamLastReqMs = 0; asyncParamLastValMs = millis(); asyncParamRetryCount = 0;
           asyncParamPollStartCount++;
           startParamSync();
         } else { fullParamSyncBlockedHighSfCount++; abortParamSyncRecovery("block_full_param_ext_high_sf"); enqueueBridgeStatusText(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync"); }
@@ -1653,8 +1676,19 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
           suppressCurrentRawToPixhawk = true;
           abortParamSyncRecovery("block_param_ext_read_high_sf");
           enqueueBridgeStatusText(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync");
-        } else if (fullParamSyncAllowedAtCurrentSF()) {
-          startParamSync();
+        } else {
+          if (fullParamSyncAllowedAtCurrentSF()) startParamSync();
+          // Intercept and handle extended parameter read requests during active async proxy
+          if (asyncParamPollActive) {
+            suppressCurrentRawToPixhawk = true;
+            if (pr.param_index >= 0) {
+              asyncParamPollIndex = pr.param_index;
+              asyncParamLastReqMs = 0;
+              asyncParamRetryCount = 0;
+            } else {
+              suppressCurrentRawToPixhawk = false;
+            }
+          }
         }
       }
 #endif
@@ -1668,6 +1702,7 @@ void inspectRawCommandFromGCS(const uint8_t *payload, uint8_t len) {
       }
 #endif
     }
+
   }
 }
 
@@ -2263,7 +2298,7 @@ bool sendTelemetryPacketToGCS() {
     pkt.remote_snr_x2 = loraSnrDbToX2(lastGcsDownlinkSnr);
     pkt.remote_rssi_q = loraRssiDbmToQ254(lastGcsDownlinkRssi);
   } else {
-    pkt.remote_snr_x2 = -128;  // sentinel: belum ada metric downlink nyata
+    pkt.remote_snr_x2 = -128;  // sentinel: no real downlink metric yet
     pkt.remote_rssi_q = 0;
   }
   pkt.link_mode = linkMode;
@@ -2328,8 +2363,8 @@ void setup() {
   delay(BOOT_STABILIZE_MS);
   bootMs = millis();
 
-  // Inisialisasi EEPROM. Pada mode UAV-master PHY, nilai SF efektif ditentukan di UAV.
-  // GCS tidak perlu di-upload ulang karena akan scan dan lock ke beacon UAV.
+  // EEPROM initialization. In UAV-master PHY mode, the effective SF is determined on the UAV.
+  // GCS does not need to be re-uploaded since it will scan and lock onto the UAV beacon.
   EEPROM.begin(512);
 #if PHY_TEST_FORCE_DEFAULT_SF
   currentSF = DEFAULT_SF;
@@ -2389,8 +2424,8 @@ void loop() {
   updateConfigStuckGuards();
   updateRadioSoftRecovery();
   sendSyntheticGCSHeartbeatToPixhawkIfNeeded();
-  // ARM/DISARM dari Mission Planner diteruskan sebagai raw MAVLink.
-  // Retry otomatis tidak dipanggil agar pre-arm safety ArduPilot tidak ditembak berulang.
+  // ARM/DISARM from Mission Planner is forwarded as raw MAVLink.
+  // Auto-retry is not called so ArduPilot's pre-arm safety is not triggered repeatedly.
 
   unsigned long now = millis();
   if (now - lastAnyTx < MIN_SEND_GAP_MS) return;
@@ -2403,14 +2438,14 @@ void loop() {
   // starve the beacon at SF12; the ACK/STATUSTEXT will be sent immediately after.
   if (currentSF >= 12 && telemetryDue) { sendTelemetryPacketToGCS(); return; }
 
-  // Saat command/action baru diterima, balasan Pixhawk (terutama COMMAND_ACK/STATUSTEXT)
-  // harus naik dulu sebelum beacon SF tinggi. Untuk SF7-SF11 perilaku lama dipertahankan.
+  // When a new command/action is received, Pixhawk's response (especially COMMAND_ACK/STATUSTEXT)
+  // must be uploaded before high SF beacons. Old behavior is retained for SF7-SF11.
   if (commandModeActive() && highCount > 0) { sendRawPacketToGCS(true); return; }
   // Keep beacon rate constant to prevent Mission Planner connection timeout.
   if (telemetryDue) { sendTelemetryPacketToGCS(); return; }
 #ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-  // MAG_CAL_PROGRESS diprioritaskan dengan latest-value cache per compass_id dan bundling.
-  // Ini mencegah bar compass kedua/ketiga kalah oleh FIFO high queue biasa.
+  // MAG_CAL_PROGRESS is prioritized with a latest-value cache per compass_id and bundling.
+  // This prevents the second/third compass progress bar from being starved by the standard FIFO high queue.
   if (sendPendingMagCalProgressToGCS()) return;
 #endif
   if (highCount > 0) { sendRawPacketToGCS(true); return; }
@@ -2427,4 +2462,4 @@ void loop() {
     if (sendRawPacketToGCS(false)) lastLowRawTx = millis();
     return;
   }
-}
+}

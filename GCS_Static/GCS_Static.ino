@@ -202,9 +202,9 @@ uint32_t calCommandAckRxCount = 0;
 uint32_t calStatustextRxCount = 0;
 
 #define PARAM_SYNC_TIMEOUT_MS       600000UL
-#define PARAM_SYNC_IDLE_EXIT_MS       3000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9 12000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF10  12000UL
+#define PARAM_SYNC_IDLE_EXIT_MS       15000UL
+#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9 20000UL
+#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF10  20000UL
 #define PARAM_SYNC_NO_VALUE_EXIT_MS_SF11  10000UL
 #define PARAM_SYNC_NO_VALUE_EXIT_MS_SF12   8000UL
 #define PARAM_MODE_HOLD_MS           5000UL
@@ -451,9 +451,9 @@ unsigned long lastRadioStatusMs = 0;
 #define MP_SIGNAL_REQUIRE_BIDIR_ACK 0
 #define MP_REPORT_REMOTE_RSSI_TO_MP 0
 // V23 SURGICAL RESTART FIX:
-// Mission Planner PreFlight dapat gagal menginisialisasi Telemetry Signal setelah clean reboot
-// jika remrssi dikirim sebagai UINT8_MAX/unknown. Tetap single-source identity; hanya mirror
-// nilai rssi lokal ke remrssi untuk kompatibilitas UI Mission Planner. Tidak mengubah LoRa PHY.
+// Mission Planner PreFlight can fail to initialize Telemetry Signal after a clean reboot
+// if remrssi is sent as UINT8_MAX/unknown. Maintain single-source identity; just mirror
+// the local RSSI value to remrssi for Mission Planner UI compatibility. Does not alter LoRa PHY.
 #define MP_MIRROR_RSSI_TO_REMRSSI_FOR_MP_UI 1
 #define MP_RADIO_ZERO_BURST_AFTER_LOSS_MS 2500UL
 
@@ -916,8 +916,8 @@ bool acceptRollingUavCounter(uint32_t pktCounter) {
 }
 
 int rfQualityPercentFromRssiSnr() {
-  // Estimator lapangan ringan untuk SX1278. Nilai ini hanya salah satu komponen,
-  // bukan pemaksa sinyal agar 100%.
+  // Lightweight field estimator for SX1278. This value is only one component,
+  // not a forced signal strength override to 100%.
   int snrPct = 100;
   if (lastSnr <= -15.0f) snrPct = 0;
   else if (lastSnr < 10.0f) snrPct = (int)(((lastSnr + 15.0f) * 100.0f) / 25.0f);
@@ -1042,15 +1042,15 @@ unsigned long paramSyncNoValueExitForSF(uint8_t sf) {
 }
 
 unsigned long paramSyncIdleExitForSF(uint8_t sf) {
-  // Restore normal telemetry rates immediately once param sync completes or is canceled.
-  if (sf >= 11) return 5000UL;
-  if (sf == 10) return 3500UL;
-  return PARAM_SYNC_IDLE_EXIT_MS;
+  // Allow generous idle time at all SF to tolerate LoRa retries and Pixhawk polling gaps.
+  if (sf >= 11) return 8000UL;
+  if (sf == 10) return 5000UL;
+  return PARAM_SYNC_IDLE_EXIT_MS;  // 15000UL at SF7-9
 }
 
 void flushParamSyncCommandQueuesForRecovery() {
-  // PARAM_REQUEST_LIST/READ masuk high-priority. Jika user menekan Cancel di Mission Planner,
-  // request lama tidak boleh tertahan lalu dikirim setelah link pulih.
+  // PARAM_REQUEST_LIST/READ goes into high-priority queue. If the user clicks Cancel in Mission Planner,
+  // old requests should not be retained and transmitted after the link recovers.
   flushLowCommandQueue();
   if (paramSyncActive && rawHighCount > (RAW_HIGH_QUEUE_SIZE / 2)) {
     rawHighHead = rawHighTail = rawHighCount = 0;
@@ -1180,16 +1180,16 @@ void clearCommandProxyAck(uint16_t command) {
 bool shouldForwardCommandAckToMissionPlanner(const mavlink_command_ack_t &ack) {
   uint16_t command = (uint16_t)ack.command;
 
-  // ACK background/internal tidak boleh diteruskan ke Mission Planner. Bahkan jika request
-  // SET_MESSAGE_INTERVAL berasal dari MP, ACK ini sering datang saat doCommand menunggu ACK action
-  // sehingga memunculkan "Commands dont match" dan bisa membuat Mission Planner crash.
+  // Background/internal ACKs must not be forwarded to Mission Planner. Even if the
+  // SET_MESSAGE_INTERVAL request originates from MP, this ACK often arrives while doCommand is waiting for an action ACK,
+  // causing a "Commands dont match" error and potentially crashing Mission Planner.
   if (isBackgroundOrInternalCommandAck(command)) {
     commandAckSuppressedCount++;
     return false;
   }
 
-  // Jika GCS sudah mengirim ACK proxy untuk action command high-SF, suppress ACK asli yang datang belakangan
-  // supaya Mission Planner tidak menerima ACK ganda saat state doCommand sudah selesai.
+  // If GCS has already sent a proxy ACK for a high-SF action command, suppress the original ACK that arrives later
+  // to prevent Mission Planner from receiving duplicate ACKs once the doCommand state is already completed.
   if (wasCommandProxyAcked(command)) {
     clearRecentMissionPlannerCommand(command);
     commandAckSuppressedCount++;
@@ -1207,8 +1207,8 @@ bool shouldForwardCommandAckToMissionPlanner(const mavlink_command_ack_t &ack) {
     return true;
   }
 
-  // Pada SF tinggi, COMMAND_ACK yang datang terlambat mudah tertukar dengan doCommand baru
-  // di Mission Planner. Jangan teruskan ACK yang tidak punya command pending.
+  // At high SF, late-arriving COMMAND_ACKs can easily be mistaken for a new doCommand
+  // in Mission Planner. Do not forward ACKs that do not have a pending command.
   if (activeSF >= COMMAND_PROXY_ACK_MIN_SF) {
     commandAckSuppressedCount++;
     return false;
@@ -1478,9 +1478,12 @@ bool enqueueHighRawPacket(const uint8_t *data, uint8_t len) {
     flushLowCommandQueue();
   }
   if (rawHighCount >= RAW_HIGH_QUEUE_SIZE) {
+    // Slide queue forward: drop oldest entry to make room for new high-priority request.
+    // This ensures Mission Planner gap-fill PARAM_REQUEST_READ is never silently lost.
+    rawHighTail = (rawHighTail + 1) % RAW_HIGH_QUEUE_SIZE;
+    rawHighCount--;
     rawHighDrop++;
     commandDrop++;
-    return false;
   }
   MavlinkRawPacket &pkt = rawHighQueue[rawHighHead];
   memset(&pkt, 0, sizeof(pkt));
@@ -1923,10 +1926,10 @@ void enqueueGCSMavlinkMessage(const mavlink_message_t &msg) {
   // Real flight controller telemetry state routing:
   // Mode/armed state in Mission Planner changes only after real FC HEARTBEAT/ACK returns.
 #if COMMAND_PROXY_ACK_ON_ENQUEUE_ENABLE
-  // Pada SF tinggi, Mission Planner doCommand sering timeout/crash sebelum LoRa half-duplex
-  // sempat mengirim command ke UAV dan menerima COMMAND_ACK asli dari Pixhawk.
-  // ACK ini adalah ACK dari bridge GCS bahwa command sudah diterima dan diantrikan,
-  // sedangkan eksekusi riil tetap dilakukan oleh Pixhawk melalui jalur LoRa.
+  // At high SF, Mission Planner doCommand often times out or crashes before the half-duplex LoRa link
+  // has a chance to transmit the command to the UAV and receive the original COMMAND_ACK from Pixhawk.
+  // This ACK is a GCS bridge-level ACK indicating the command is received and queued,
+  // while the actual execution is still performed by Pixhawk via the LoRa link.
   if (queuedOk && flightAction && shouldProxyAckForCommand(commandIdForAck)) {
     sendProxyCommandAckToMissionPlanner(commandIdForAck);
     if (activeSF >= COMMAND_PROXY_ACK_MIN_SF) {
@@ -2213,8 +2216,8 @@ void sendGpsRawFromBeacon(uint8_t sysid, uint8_t compid, const PixhawkDataBeacon
   p.alt = decimeterToMillimeter(d.gps.alt_dm);
   p.eph = d.gps.eph;
   p.epv = d.gps.epv;
-  // gps.vel dan gps.cog tidak dikirim lagi di payload utama.
-  // Keduanya direkonstruksi dari groundspeed dan heading agar Mission Planner tetap mendapat GPS_RAW_INT lengkap.
+  // gps.vel and gps.cog are no longer transmitted in the main payload.
+  // Both are reconstructed from groundspeed and heading so Mission Planner still receives a complete GPS_RAW_INT message.
   p.vel = d.groundspeed_cms;
   p.cog = d.heading;
   p.satellites_visible = mpGpsSatellitesForDisplay(d.gps.satellites_visible, d.gps.fix_type);
@@ -2299,25 +2302,25 @@ uint8_t missionPlannerRadioSignalByte() {
   int targetPct;
   if (expected >= 4) {
     // Physical packet delivery rates calculated over sample windows
-    // berada sekitar 97-98%, selama beacon masih fresh. Ini bukan dipaksa 100%.
+    // hover around 97-98% as long as the beacon remains fresh. This is not forced to 100%.
     targetPct = pdrPct;
   } else {
-    // Saat awal koneksi window belum cukup, gunakan freshness + RF agar MP segera
-    // mendapat nilai radio yang valid tanpa menunggu puluhan sampel.
+    // At the beginning of the connection when the window is not yet sufficient, use freshness + RF so MP immediately
+    // receives valid radio values without waiting for dozens of samples.
     targetPct = (freshnessPct * 70 + rfPct * 30) / 100;
   }
 
   // Freshness acts as the primary governor: no incoming packets causes the link quality to drop.
   if (targetPct > freshnessPct) targetPct = freshnessPct;
 
-  // RF hanya menjadi safety cap jika benar-benar buruk. Dengan cara ini, RSSI/SNR
-  // yang terukur agak aneh pada jarak 60 cm tidak menurunkan indikator dari PDR 98% ke 86%.
+  // RF is only a safety cap if it is truly poor. In this way, RSSI/SNR
+  // values measured abnormally at a distance of 60 cm do not degrade the indicator from PDR 98% to 86%.
   if (rfPct < 35 && targetPct > rfPct) targetPct = rfPct;
 
   // Metric calculation filter:
-  // Telemetry Signal di Mission Planner dibuat merepresentasikan kualitas uplink telemetry UAV->GCS
-  // yang benar-benar diterima GCS. ACK/downlink tetap dihitung oleh kode, tetapi tidak menjadi cap
-  // utama indikator ini, karena itu yang menyebabkan stuck sekitar 68% saat PDR/RSSI/SNR uplink bagus.
+  // Telemetry Signal in Mission Planner is designed to represent the UAV->GCS uplink telemetry quality
+  // actually received by the GCS. ACK/downlink is still tracked by the code, but does not serve as the primary
+  // cap for this indicator, as that causes it to get stuck around 68% when the uplink PDR/RSSI/SNR is good.
 #if MP_SIGNAL_REQUIRE_BIDIR_ACK
   int dlPct = downlinkAckQualityPercentFromUavMeta();
   if (dlPct > 0) {
@@ -2357,11 +2360,11 @@ void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid) {
 
   uint8_t remoteSignal = latestRemoteRssiByteOrZero();
 #if MP_MIRROR_RSSI_TO_REMRSSI_FOR_MP_UI
-  // V23 surgical restart fix: jangan kirim remrssi=UINT8_MAX saat link uplink valid,
-  // karena beberapa pembacaan PreFlight Mission Planner memperlakukan remote RSSI unknown
-  // sebagai telemetry signal tidak valid/tidak terbaca setelah reboot.
-  // Ini hanya memengaruhi field RADIO_STATUS ke USB Mission Planner; metrik ACK/downlink asli
-  // tetap tersedia di MetricsSerial dan tidak dipakai untuk mengubah LoRa PHY.
+  // V23 surgical restart fix: do not send remrssi=UINT8_MAX when the uplink is valid,
+  // since some Mission Planner PreFlight checks treat an unknown remote RSSI
+  // as an invalid/unreadable telemetry signal after reboot.
+  // This only affects the RADIO_STATUS field sent to USB Mission Planner; original ACK/downlink metrics
+  // are still available in MetricsSerial and are not used to modify LoRa PHY.
   if (signal > 0) remoteSignal = signal;
 #endif
   uint32_t expected = 0, rx = 0, bytes = 0;
@@ -2379,27 +2382,27 @@ void sendRadioStatusToMissionPlanner(uint8_t sysid, uint8_t compid) {
   radio_status.noise = 0;
   radio_status.remnoise = 0;
   // Metric calculation filter:
-  // RADIO_STATUS.rxerrors/fixed adalah counter error/corrected packet modem, bukan totalLost/totalRx bridge.
-  // Kode ini tidak mengukur corrected packet ala SiK, jadi jangan isi fixed=totalRx karena dapat membuat
-  // Mission Planner menilai radio telemetry terdegradasi. PDR/PLR asli tetap tersedia di MetricsSerial.
+  // RADIO_STATUS.rxerrors/fixed are modem error/corrected packet counters, not bridge totalLost/totalRx.
+  // This code does not measure SiK-style corrected packets, so do not populate fixed=totalRx as it might cause
+  // Mission Planner to evaluate the radio telemetry as degraded. Actual PDR/PLR is still available in MetricsSerial.
   radio_status.rxerrors = 0;
   radio_status.fixed = 0;
 
   /*
-    Kunci perbaikan:
-    - sysid tetap sysid kendaraan agar tidak membuat vehicle baru.
-    - compid khusus RADIO_STATUS memakai MAV_COMP_ID_TELEMETRY_RADIO.
-    Ini membuat Mission Planner lebih konsisten membaca PreFlight
-    Telemetry Signal sebagai sinyal radio telemetri.
+    Key fix:
+    - sysid remains the vehicle's sysid so it does not create a new vehicle.
+    - compid specifically for RADIO_STATUS uses MAV_COMP_ID_TELEMETRY_RADIO.
+    This makes Mission Planner read the PreFlight Telemetry Signal more consistently
+    as a radio telemetry signal.
   */
   canonicalizeMissionPlannerSource(sysid, compid);
 
 #if RADIO_STATUS_USE_TELEM_RADIO_COMPID
   #if MP_RADIO_STATUS_DEDICATED_CHAN_ENABLE
-    // Kunci MPQUALITY FIX:
-    // compid radio tetap dipakai agar Mission Planner mengenali telemetry radio,
-    // tetapi sequence dibuat pada channel MAVLink khusus sebelum checksum dibuat.
-    // Ini menghindari packet-lost palsu akibat gap sequence antara AUTOPILOT1 dan TELEMETRY_RADIO.
+    // Key MPQUALITY FIX:
+    // Radio compid is still used so Mission Planner recognizes the telemetry radio,
+    // but the sequence is generated on a dedicated MAVLink channel before the checksum is created.
+    // This avoids false packet-loss indications due to sequence gaps between AUTOPILOT1 and TELEMETRY_RADIO.
     mavlink_msg_radio_status_encode_chan(sysid, MAV_COMP_ID_TELEMETRY_RADIO, MP_RADIO_STATUS_MAVLINK_CHAN, &msg_out, &radio_status);
   #else
     mavlink_msg_radio_status_encode(sysid, MAV_COMP_ID_TELEMETRY_RADIO, &msg_out, &radio_status);
@@ -2591,8 +2594,8 @@ void reencodeParsedMessageToMissionPlanner(const mavlink_message_t &inMsg) {
     }
     case MAVLINK_MSG_ID_STATUSTEXT: {
       mavlink_statustext_t p; mavlink_msg_statustext_decode(&inMsg, &p);
-      // Saat parameter/kalibrasi, semua STATUSTEXT diteruskan agar UI Mission Planner tidak diam.
-      // Saat normal, hanya warning/error/critical ke atas yang diteruskan untuk mengurangi flooding.
+      // During parameter sync/calibration, all STATUSTEXT messages are forwarded to keep the Mission Planner UI active.
+      // Under normal conditions, only warning/error/critical and above are forwarded to reduce flooding.
       if (armFeedbackActive() || paramSyncActive || calibrationConfigModeActive() || p.severity <= 4) {
         mavlink_msg_statustext_encode(sysid, compid, &msg_out, &p);
         sendMavlinkMessageToMissionPlanner(msg_out);
@@ -3128,8 +3131,8 @@ bool initLoRaRadio() {
 }
 
 void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, uint8_t profile, uint8_t mode, uint16_t latency_x100, uint16_t packetSize, const TelemetryMeta &meta) {
-  // Lock ke PHY yang diumumkan UAV di beacon/header. Paket ini hanya bisa diterima jika radio GCS
-  // sedang berada pada SF yang kompatibel; field sf dipakai sebagai state resmi untuk ACK/command berikutnya.
+  // Lock to the PHY announced by the UAV in the beacon/header. This packet can only be received if the GCS radio
+  // is currently on a compatible SF; the sf field is used as the official state for subsequent ACKs/commands.
   activeSF = sf;
   activeTP = tp;
   scanSF = sf;
@@ -3145,11 +3148,11 @@ void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t s
   bool ackSlot = shouldRespondToTelemetry(pktCounter, sf);
 
   // V14 HOTFIX COMMAND-SLOT:
-  // SF10-SF12 UAV hanya pasti membuka RX pada telemetry ACK slot.
-  // Jangan kirim command hanya karena GCS sedang commandPriorityActive(), karena sebelum
-  // command pertama diterima, UAV belum masuk commandModeActive() dan tidak mendengar
-  // pada non-ACK slot. Jika GCS transmit pada non-ACK slot, radio.transmit() tetap sukses
-  // secara lokal, queue dipop, tetapi UAV tidak menerima command.
+  // SF10-SF12 UAV is only guaranteed to open RX during the telemetry ACK slot.
+  // Do not send commands just because the GCS has commandPriorityActive(), because before
+  // the first command is received, the UAV has not entered commandModeActive() and is not listening
+  // on non-ACK slots. If the GCS transmits on a non-ACK slot, radio.transmit() still succeeds
+  // locally, the queue is popped, but the UAV will not receive the command.
   bool mayUseThisSlot = ackSlot;
   if (sf <= 9 && pendingDownlink) mayUseThisSlot = true;
 
@@ -3201,8 +3204,8 @@ void setup() {
   activeSF = DEFAULT_SF;
   scanSF = DEFAULT_SF;
 #else
-  // UAV-master PHY: GCS tidak perlu di-upload ulang saat SF UAV berubah.
-  // GCS mulai scan dari SF_MIN lalu lock saat menerima beacon valid dari UAV.
+  // UAV-master PHY: GCS does not need to be re-uploaded when the UAV's SF changes.
+  // GCS starts scanning from SF_MIN and locks upon receiving a valid beacon from the UAV.
   activeSF = SF_MIN;
   scanSF = SF_MIN;
 #endif
