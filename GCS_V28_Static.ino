@@ -450,6 +450,10 @@ HardwareSerial MetricsSerial(2);
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
 #define COMPACT_CMD_MAX_LEN sizeof(CompactCommandLongPacket)
 
+#include "GCSRadioHelpers.h"
+#include "GCSCommandQueue.h"
+#include "GCCalibHelpers.h"
+
 // Forward declarations used before the Arduino preprocessor generates prototypes.
 // Penting untuk Arduino IDE: tanpa deklarasi eksplisit ini, auto-prototype Arduino
 // dapat ditempatkan sebelum struct custom seperti MavlinkRawPacket/ParamBulkPacket/
@@ -886,14 +890,11 @@ int rfQualityPercentFromRssiSnr() {
   return constrain((snrPct * 60 + rssiPct * 40) / 100, 0, 100);
 }
 
-#include "GCSRadioHelpers.h"
-
 uint16_t telemetryPayloadBytesForType(uint8_t pktType) {
   if (pktType == PKT_TELEM_BEACON) return sizeof(PixhawkDataBeacon);
   return 0;
 }
 
-#include "GCCalibHelpers.h"
 
 void printMetricsHeader() {
   MetricsSerial.println(
@@ -1431,7 +1432,6 @@ uint8_t repeatCountForGCSMessage(const mavlink_message_t &msg) {
 
 void flushLowCommandQueue() { rawLowHead = 0; rawLowTail = 0; rawLowCount = 0; }
 void flushHighCommandQueue() { rawHighHead = 0; rawHighTail = 0; rawHighCount = 0; }
-#include "GCSCommandQueue.h"
 
 bool enqueueHighRawPacket(const uint8_t *data, uint8_t len) {
   if (len == 0 || len > RAW_MAVLINK_MAX) { commandDrop++; return false; }

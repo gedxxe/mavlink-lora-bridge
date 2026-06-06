@@ -467,6 +467,11 @@ struct __attribute__((packed)) PixhawkDataFull {
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
 #define COMPACT_CMD_MAX_LEN sizeof(CompactCommandLongPacket)
 
+#include "UAVRadioHelpers.h"
+#include "UAVParamQueue.h"
+#include "UAVCalibHelpers.h"
+#include "BeaconFillHelpers.h"
+
 uint8_t profileForSF(int sf);
 bool isFlightActionCommandId(uint16_t command);
 bool peekHighRawPacket(MavlinkRawPacket &pkt);
@@ -582,8 +587,6 @@ bool isInteractiveSetupParamId(const char *id) {
   if (paramIdStartsWith(id, "ANGLE_")) return true;
   return false;
 }
-
-#include "UAVRadioHelpers.h"
 
 void flushLowQueue() { lowHead = lowTail = lowCount = 0; }
 void flushParamBulkQueue() { paramBulkHead = paramBulkTail = paramBulkCount = 0; }
@@ -1013,8 +1016,6 @@ bool enqueueMavlinkLowForGCSBundled(const mavlink_message_t &msg) {
   if (len <= RAW_MAVLINK_MAX) return enqueueLowRawPacketBundled(buf, (uint8_t)len);
   oversizedMavlinkDrop++; lowQueueDrop++; return false;
 }
-
-#include "UAVParamQueue.h"
 bool isCriticalCalibrationFeedback(const mavlink_message_t &msg) {
   switch (msg.msgid) {
 #ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
@@ -1026,9 +1027,6 @@ bool isCriticalCalibrationFeedback(const mavlink_message_t &msg) {
     default: return false;
   }
 }
-
-
-#include "UAVCalibHelpers.h"
 uint8_t getTargetSysId() { return (pixDataFull.system_id == 0) ? 1 : pixDataFull.system_id; }
 uint8_t getTargetCompId() { return (pixDataFull.component_id == 0) ? MAV_COMP_ID_AUTOPILOT1 : pixDataFull.component_id; }
 bool isPixhawkArmed() { return (pixDataFull.valid_flags & VALID_HEARTBEAT) && (pixDataFull.base_mode & MAV_MODE_FLAG_SAFETY_ARMED); }
@@ -2017,8 +2015,6 @@ void applyScheduledConfigAfterAckedTelemetry(uint32_t ackedCounter) {
   if (scheduledApplyCounter != 0 && ackedCounter < scheduledApplyCounter) return;
   applyConfig(scheduledSF, scheduledTP, scheduledProfile);
 }
-
-#include "BeaconFillHelpers.h"
 
 bool sendTelemetryPacketToGCS() {
   uint8_t profile = selectTelemetryProfile();
