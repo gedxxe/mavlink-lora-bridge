@@ -6,123 +6,13 @@
 #include <stdio.h>
 #include <stddef.h>
 #include "TelemetryProtoFix.h"
-#ifndef UINT8_MAX
-#define UINT8_MAX 255
-#endif
-
-#ifndef RADIOLIB_ERR_UNKNOWN
-#define RADIOLIB_ERR_UNKNOWN -999
-#endif
-
-#ifndef MAVLINK_COMM_2
-#define MAVLINK_COMM_2 2
-#endif
-
-#ifndef MAVLINK_MSG_ID_SET_MODE
-#define MAVLINK_MSG_ID_SET_MODE 11
-#endif
-#ifndef MAVLINK_MSG_ID_MISSION_SET_CURRENT
-#define MAVLINK_MSG_ID_MISSION_SET_CURRENT 41
-#endif
-#ifndef MAVLINK_MSG_ID_MISSION_CLEAR_ALL
-#define MAVLINK_MSG_ID_MISSION_CLEAR_ALL 45
-#endif
-#ifndef MAVLINK_MSG_ID_MANUAL_CONTROL
-#define MAVLINK_MSG_ID_MANUAL_CONTROL 69
-#endif
-#ifndef MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE
-#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE 70
-#endif
-
-// Mission Planner / ArduPilot command IDs.
-#define CMD_DO_SET_MODE               176
-#ifndef MAV_CMD_DO_SET_MODE
-#define MAV_CMD_DO_SET_MODE 176
-#endif
-#define CMD_COMPONENT_ARM_DISARM      400
-#ifndef MAV_CMD_COMPONENT_ARM_DISARM
-#define MAV_CMD_COMPONENT_ARM_DISARM 400
-#endif
-#define CMD_PREFLIGHT_CALIBRATION     241
-#define CMD_PREFLIGHT_STORAGE         245
-#define CMD_PREFLIGHT_REBOOT_SHUTDOWN 246
-#define CMD_START_RX_PAIR             500
-#define CMD_DO_START_MAG_CAL          42424
-#define CMD_DO_ACCEPT_MAG_CAL         42425
-#define CMD_DO_CANCEL_MAG_CAL         42426
-#define CMD_ACCELCAL_VEHICLE_POS      42429
-#ifndef MAV_CMD_SET_MESSAGE_INTERVAL
-#define MAV_CMD_SET_MESSAGE_INTERVAL 511
-#endif
-#ifndef MAV_CMD_REQUEST_MESSAGE
-#define MAV_CMD_REQUEST_MESSAGE 512
-#endif
-#ifndef MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES
-#define MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES 520
-#endif
-
-#ifndef MAV_SEVERITY_CRITICAL
-#define MAV_SEVERITY_CRITICAL 2
-#endif
-#ifndef MAV_SEVERITY_NOTICE
-#define MAV_SEVERITY_NOTICE 5
-#endif
-#ifndef MAV_SEVERITY_INFO
-#define MAV_SEVERITY_INFO 6
-#endif
-#ifndef MAV_RESULT_ACCEPTED
-#define MAV_RESULT_ACCEPTED 0
-#endif
-#ifndef MAV_RESULT_DENIED
-#define MAV_RESULT_DENIED 2
-#endif
-#ifndef MAV_RESULT_FAILED
-#define MAV_RESULT_FAILED 4
-#endif
-
-#ifndef MAV_CMD_NAV_WAYPOINT
-#define MAV_CMD_NAV_WAYPOINT 16
-#endif
-#ifndef MAV_CMD_NAV_LOITER_UNLIM
-#define MAV_CMD_NAV_LOITER_UNLIM 17
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TURNS
-#define MAV_CMD_NAV_LOITER_TURNS 18
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TIME
-#define MAV_CMD_NAV_LOITER_TIME 19
-#endif
-#ifndef MAV_CMD_NAV_RETURN_TO_LAUNCH
-#define MAV_CMD_NAV_RETURN_TO_LAUNCH 20
-#endif
-#ifndef MAV_CMD_NAV_LAND
-#define MAV_CMD_NAV_LAND 21
-#endif
-#ifndef MAV_CMD_NAV_TAKEOFF
-#define MAV_CMD_NAV_TAKEOFF 22
-#endif
-#ifndef MAV_CMD_DO_REPOSITION
-#define MAV_CMD_DO_REPOSITION 192
-#endif
-#ifndef MAV_CMD_MISSION_START
-#define MAV_CMD_MISSION_START 300
-#endif
-#ifndef MAV_CMD_DO_SET_HOME
-#define MAV_CMD_DO_SET_HOME 179
-#endif
+#include "SharedConfig.h"
 
 // =====================================================
 // NODE GCS - OPTIMIZED MAVLINK-AWARE LORA BRIDGE - STATIS V18 PAYLOAD 78B MPCONNECT FIX
 // Hanya menerima payload beacon ringkas tetap untuk pengujian PHY LoRa
 // =====================================================
 
-// ================= Link Mode =================
-#define LINK_MODE_NORMAL       0
-#define LINK_MODE_PARAM_SYNC   1
-#define LINK_MODE_CALIBRATION  2
-#define LINK_MODE_MISSION      3
-#define LINK_MODE_FAILSAFE     4
-#define LINK_MODE_COMMAND      5
 uint8_t linkMode = LINK_MODE_NORMAL;
 
 // ================= Flight Command Priority Mode =================
@@ -240,49 +130,20 @@ unsigned long armFeedbackUntilMs = 0;
 // actually transmitted to UAV, plus a small SF-aware travel guard.
 #define ARM_TX_WAIT_TIMEOUT_MS       10000UL
 #define ARM_ACK_TOTAL_TIMEOUT_MS     28000UL
-uint32_t armCommandTxnSeq = 0;
-bool armCommandTxnActive = false;
-bool armCommandTxnTxConfirmed = false;
-bool armCommandTxnArm = false;
-bool armCommandTxnForce = false;
-unsigned long armCommandTxnQueuedMs = 0;
-unsigned long armCommandTxnTxMs = 0;
-uint32_t armCommandAckSuppressedStaleCount = 0;
-uint32_t armCommandAckForwardedCount = 0;
 
 uint8_t lastHighSfNoticeForSf = 0;
 bool highSfConnectNoticeSent = false;
 uint32_t fullParamSyncBlockedHighSfCount = 0;
 uint32_t paramReadBlockedHighSfCount = 0;
 
-// ================= Protocol =================
-#define PROTOCOL_VERSION       0x04
-#define NETWORK_ID             0x2244
-#define AUTH_TOKEN             0xA56C93D1UL  // Pre-shared secret: tidak lagi dikirim mentah; dipakai untuk auth-tag per paket.
-#define SECURITY_KEY_MIX        0x3D7F21B9UL
-#define SECURITY_ANTI_REPLAY_ENABLE 1
-#define SECURITY_MAX_COUNTER_GAP    5000UL
-#define SECURITY_REBOOT_GRACE_MS    15000UL
 
 // ================= LoRa =================
-#define LORA_SS    5
-#define LORA_RST   25
-#define LORA_DIO0  26
-#define LORA_DIO1  RADIOLIB_NC
 
-#define FREQ_MHZ      433.0
-#define LORA_BW_KHZ   500.0          // BW 500 kHz
-#define LORA_CR_DEN   8
-#define LORA_SYNC     0x12
 
-#define SF_MIN 7
-#define SF_MAX 12
 #define DEFAULT_SF 7   // Hanya SF awal scan; GCS akan auto-scan dan lock ke SF UAV
 #define UAV_MASTER_PHY_MODE 1       // 1 = UAV master PHY; GCS scan SF7..SF12 saat belum lock
 #define PHY_TEST_LOCK_INITIAL_SF 0  // 0 = auto-scan; tidak perlu samakan DEFAULT_SF GCS dengan UAV
 #define GCS_FIXED_TP 16
-#define TP_MIN 10
-#define TP_MAX 16
 #define GCS_DEFAULT_TP GCS_FIXED_TP   // TP awal GCS; setelah lock, GCS mengikuti TP yang diumumkan UAV
 
 #define RX_TIMEOUT_MS            1000UL  // fallback; loop memakai rxTimeoutForSF()
@@ -295,18 +156,8 @@ uint32_t paramReadBlockedHighSfCount = 0;
 #define HEARTBEAT_SYNTH_INTERVAL_MS 1000UL
 #define TELEMETRY_ACK_DECIMATION_ENABLE 1
 
-#define PKT_LINK_ACK          0xA5
-#define PKT_MAVLINK_RAW       0x4D
-#define PKT_CMD_COMPACT       0x43
-#define PKT_PARAM_BULK        0x50
-#define PKT_TELEM_BEACON      0x57
-#define PKT_CONFIG_PROPOSE    0xC0
-#define PKT_CONFIG_ACK        0xC1
 
-#define PROFILE_BEACON        0
 
-#define RAW_MAVLINK_MAX       235
-#define PARAM_BULK_MAX_RECORDS 9
 #define RAW_HIGH_QUEUE_SIZE   64
 #define RAW_LOW_QUEUE_SIZE    96
 #define COMPACT_CMD_QUEUE_SIZE 16
@@ -319,12 +170,7 @@ uint32_t paramReadBlockedHighSfCount = 0;
 #define REPEAT_NORMAL_COMMAND       1
 #define CALIBRATION_DEDUP_MS     2200UL
 
-#define LORA_PREAMBLE_SYMBOLS 8.0f
-#define LORA_PHY_CRC_ENABLED 1
-#define LORA_IMPLICIT_HEADER 0
 
-#define LORA_INIT_RETRY_COUNT 8
-#define LORA_INIT_RETRY_DELAY_MS 250
 
 // ================= Boot / Autostart Recovery =================
 // Surgical fix: membuat node GCS pulih sendiri setelah power-on tanpa tombol reset manual.
@@ -440,188 +286,27 @@ SX1278 radio = new Module(LORA_SS, LORA_DIO0, LORA_RST, LORA_DIO1, spi, spiSetti
 #define GCS_Serial Serial
 HardwareSerial MetricsSerial(2);
 
-#define VALID_HEARTBEAT   (1UL << 0)
-#define VALID_ATTITUDE    (1UL << 1)
-#define VALID_GLOBAL_POS  (1UL << 2)
-#define VALID_VFR_HUD     (1UL << 3)
-#define VALID_SYS_STATUS  (1UL << 4)
-#define VALID_EKF         (1UL << 5)
-#define VALID_GPS_RAW     (1UL << 6)
 
 // ================= Struktur data (harus sinkron dengan UAV) =================
-struct __attribute__((packed)) PacketHeader {
-  uint8_t type;
-  uint8_t protocol;
-  uint16_t network_id;
-  uint16_t crc;
-  uint32_t token;
-};
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
 
 // GPS lengkap (untuk FULL, REDUCED, MINIMAL)
-struct __attribute__((packed)) GpsRawData {
-  uint64_t time_usec;
-  uint8_t fix_type;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  uint16_t eph;
-  uint16_t epv;
-  uint16_t vel;
-  uint16_t cog;
-  uint8_t satellites_visible;
-};
 
 // GPS ringkas payload 78B – 8 byte
-struct __attribute__((packed)) GpsDataRingkas {
-  uint8_t fix_type;
-  uint8_t satellites_visible;
-  int16_t alt_dm;      // UAV mengirim decimeter; GCS mengembalikan ke mm.
-  uint16_t eph;
-  uint16_t epv;
-};
 
 // Telemetry Meta payload 78B – 9 byte
 // cnt_ack, success/fail streak, dan energy mJ tetap dipertahankan untuk analisis link.
-struct __attribute__((packed)) TelemetryMeta {
-  uint8_t cnt_ack;
-  uint16_t success_streak;
-  uint16_t fail_streak;
-  uint32_t telem_tx_energy_mJ_x100;
-};
 
 // Data Full (tidak berubah, untuk profil FULL)
-struct __attribute__((packed)) PixhawkDataFull {
-  uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t mav_type;
-  uint8_t autopilot;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-  float roll;
-  float pitch;
-  float yaw;
-  float rollspeed;
-  float pitchspeed;
-  float yawspeed;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  int32_t relative_alt_mm;
-  int16_t vx;
-  int16_t vy;
-  int16_t vz;
-  uint16_t hdg;
-  float airspeed;
-  float groundspeed;
-  int16_t heading;
-  uint16_t throttle;
-  float climb;
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-  uint16_t ekf_flags;
-  GpsRawData gps;
-};
 
 // Data Reduced (tidak berubah)
-struct __attribute__((packed)) PixhawkDataReduced {
-  uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t mav_type;
-  uint8_t autopilot;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-  float roll;
-  float pitch;
-  float yaw;
-  int32_t lat;
-  int32_t lon;
-  int32_t relative_alt_mm;
-  int16_t heading;
-  float groundspeed;
-  float climb;
-  uint16_t voltage_battery;
-  int8_t battery_remaining;
-  uint16_t ekf_flags;
-  GpsRawData gps;
-};
 
 // Data Minimal (tidak berubah)
-struct __attribute__((packed)) PixhawkDataMinimal {
-  uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-  float roll;
-  float pitch;
-  float yaw;
-  int32_t lat;
-  int32_t lon;
-  int32_t relative_alt_mm;
-  uint16_t voltage_battery;
-  int8_t battery_remaining;
-  uint16_t heading;
-  uint16_t groundspeed_cms;
-  int16_t climb_cms;
-  GpsRawData gps;
-};
 
 // Data Beacon ringkas payload 78B – 49 byte
-struct __attribute__((packed)) PixhawkDataBeacon {
-  uint8_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-
-  int16_t roll_cd;
-  int16_t pitch_cd;
-  int16_t yaw_cd;
-
-  int32_t lat;
-  int32_t lon;
-  int16_t relative_alt_dm;
-
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-
-  uint16_t airspeed_cms;
-  uint16_t groundspeed_cms;
-  uint16_t heading;       // centi-degree.
-  int16_t climb_cms;
-  uint8_t throttle;       // persen 0..100.
-
-  uint16_t ekf_flags;
-  GpsDataRingkas gps;
-};
 
 // ================= Paket telemetri =================
 
-struct __attribute__((packed)) TelemetryBeaconPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-
-  // 3 byte radio/status ringkas:
-  // - radio_packed menyimpan SF, TP, profile dalam 1 byte.
-  // - remote_snr_x2 dan remote_rssi_q adalah kualitas downlink GCS->UAV yang diukur nyata oleh UAV.
-  uint8_t radio_packed;
-  int8_t remote_snr_x2;
-  uint8_t remote_rssi_q;
-
-  uint8_t link_mode;
-  uint16_t latency_x100;
-  TelemetryMeta meta;
-  PixhawkDataBeacon data;
-};
 static_assert(sizeof(GpsDataRingkas) == 8, "GpsDataRingkas harus 8 byte");
 static_assert(sizeof(PixhawkDataBeacon) == 49, "PixhawkDataBeacon harus 49 byte");
 static_assert(sizeof(TelemetryMeta) == 9, "TelemetryMeta harus 9 byte");
@@ -754,11 +439,6 @@ static inline uint8_t latestRemoteRssiByteOrZero() {
 #define TELEMETRY_BEACON_SENSOR_PAYLOAD_BYTES ((uint16_t)sizeof(PixhawkDataBeacon))
 
 // ================= Struktur lain (untuk raw MAVLink) =================
-struct __attribute__((packed)) MavlinkRawPacket {
-  PacketHeader hdr;
-  uint8_t len;
-  uint8_t payload[RAW_MAVLINK_MAX];
-};
 
 #define COMPACT_CMD_KIND_ARM_DISARM   1
 #define COMPACT_CMD_KIND_SET_MODE     2
@@ -766,99 +446,17 @@ struct __attribute__((packed)) MavlinkRawPacket {
 #define COMPACT_CMD_SCALE_1000        1000.0f
 #define COMPACT_CMD_SCALE_1E7         10000000.0f
 
-struct __attribute__((packed)) CompactCommandBasePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-};
 
-struct __attribute__((packed)) CompactArmDisarmPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t arm;
-  int32_t param2_x1000;
-};
 
-struct __attribute__((packed)) CompactSetModePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-};
 
-struct __attribute__((packed)) CompactCommandLongPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint16_t command;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t confirmation;
-  int32_t p1_x1000;
-  int32_t p2_x1000;
-  int32_t p3_x1000;
-  int32_t p4_x1000;
-  int32_t p5_x1e7;
-  int32_t p6_x1e7;
-  int32_t p7_x1000;
-};
 
-#define COMPACT_CMD_MAX_LEN sizeof(CompactCommandLongPacket)
 
-struct __attribute__((packed)) CompactCommandQueueItem {
-  uint8_t len;
-  uint16_t command;
-  uint8_t payload[COMPACT_CMD_MAX_LEN];
-};
 
-struct __attribute__((packed)) CompactParamValue {
-  float param_value;
-  uint16_t param_count;
-  uint16_t param_index;
-  char param_id[16];
-  uint8_t param_type;
-};
-struct __attribute__((packed)) ParamBulkPacket {
-  PacketHeader hdr;
-  uint8_t count;
-  uint8_t sysid;
-  uint8_t compid;
-  uint8_t reserved;
-  CompactParamValue rec[PARAM_BULK_MAX_RECORDS];
-};
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
 
-struct __attribute__((packed)) LinkAckPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-};
 
-struct __attribute__((packed)) ConfigProposalPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-  uint32_t apply_counter;
-  uint8_t current_sf;
-  uint8_t current_tp;
-  uint8_t next_sf;
-  uint8_t next_tp;
-  uint8_t next_profile;
-};
 
-struct __attribute__((packed)) ConfigAckPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-  uint32_t apply_counter;
-  uint8_t accepted;
-  uint8_t next_sf;
-  uint8_t next_tp;
-  uint8_t next_profile;
-};
 
 // Forward declarations used before the Arduino preprocessor generates prototypes.
 // Penting untuk Arduino IDE: tanpa deklarasi eksplisit ini, auto-prototype Arduino
@@ -875,6 +473,47 @@ bool peekCompactCommandPacket(CompactCommandQueueItem &item);
 void popCompactCommandPacket();
 void flushCompactCommandQueue();
 bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck);
+
+
+// ============================================================================
+// EWMA Signal Filtering, PDR Sliding Window, & Transaction-Guarded Commands
+// ============================================================================
+
+/**
+ * @brief PDR (Packet Delivery Ratio) Sliding Window Metrics
+ * Maintains a moving window of expected vs received packets to calculate
+ * short-term PDR for dynamic link quality reporting.
+ */
+uint16_t pdrWinExpected[METRICS_WINDOW_SIZE] = {0};
+uint16_t pdrWinRx[METRICS_WINDOW_SIZE] = {0};
+uint16_t pdrWinBytes[METRICS_WINDOW_SIZE] = {0};
+uint16_t pdrWinIdx = 0;
+uint16_t pdrWinFilled = 0;
+
+/**
+ * @brief EWMA (Exponentially Weighted Moving Average) Signal Filtering
+ * Smoothes the calculated telemetry signal percentage so that the Mission
+ * Planner UI does not jitter during transient RF fluctuations.
+ */
+int16_t mpLinkQualityEwma_x10 = -1;
+unsigned long lastMpLinkQualityUpdateMs = 0;
+
+/**
+ * @brief ARM/FORCE-ARM Transaction Guard
+ * MAVLink COMMAND_ACK only contains command ID 400. To differentiate between
+ * normal ARM and FORCE ARM (and prevent stale ACKs from closing dialogs early),
+ * we transaction-guard the command sequence.
+ */
+uint32_t armCommandTxnSeq = 0;
+bool armCommandTxnActive = false;
+bool armCommandTxnTxConfirmed = false;
+bool armCommandTxnArm = false;
+bool armCommandTxnForce = false;
+unsigned long armCommandTxnQueuedMs = 0;
+unsigned long armCommandTxnTxMs = 0;
+uint32_t armCommandAckSuppressedStaleCount = 0;
+uint32_t armCommandAckForwardedCount = 0;
+// ============================================================================
 
 // ================= Variabel global =================
 int activeSF = SF_MIN;
@@ -999,19 +638,12 @@ unsigned long optimisticModeRealMatchSinceMs = 0;
 uint32_t optimisticModeHeartbeatCount = 0;
 uint32_t optimisticModeClearCount = 0;
 
-uint16_t pdrWinExpected[METRICS_WINDOW_SIZE] = {0};
-uint16_t pdrWinRx[METRICS_WINDOW_SIZE] = {0};
-uint16_t pdrWinBytes[METRICS_WINDOW_SIZE] = {0};
-uint16_t pdrWinIdx = 0;
-uint16_t pdrWinFilled = 0;
 
 uint32_t securityReplayDrop = 0;
 bool securityHaveLastUavCounter = false;
 uint32_t securityLastUavCounter = 0;
 unsigned long securityLastUavCounterMs = 0;
 
-int16_t mpLinkQualityEwma_x10 = -1;
-unsigned long lastMpLinkQualityUpdateMs = 0;
 
 // Link metrics reported by UAV in the 78-byte beacon. These reflect real
 // downlink/ACK reception at the UAV side and are used for RADIO_STATUS.remrssi

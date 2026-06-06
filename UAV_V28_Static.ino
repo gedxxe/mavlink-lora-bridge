@@ -7,86 +7,7 @@
 #include <stddef.h>
 #include "TelemetryProtoFix.h"
 
-#ifndef RADIOLIB_ERR_UNKNOWN
-#define RADIOLIB_ERR_UNKNOWN -999
-#endif
-
-#ifndef MAVLINK_COMM_2
-#define MAVLINK_COMM_2 2
-#endif
-
-#ifndef MAV_CMD_SET_MESSAGE_INTERVAL
-#define MAV_CMD_SET_MESSAGE_INTERVAL 511
-#endif
-
-// Mission Planner / ArduPilot command IDs.
-#define CMD_PREFLIGHT_CALIBRATION        241
-#define CMD_PREFLIGHT_STORAGE            245
-#define CMD_PREFLIGHT_REBOOT_SHUTDOWN    246
-#define CMD_START_RX_PAIR                500
-#define CMD_DO_START_MAG_CAL             42424
-#define CMD_DO_ACCEPT_MAG_CAL            42425
-#define CMD_DO_CANCEL_MAG_CAL            42426
-#define CMD_ACCELCAL_VEHICLE_POS         42429
-
-#ifndef MAV_CMD_COMPONENT_ARM_DISARM
-#define MAV_CMD_COMPONENT_ARM_DISARM 400
-#endif
-#ifndef MAV_CMD_DO_SET_MODE
-#define MAV_CMD_DO_SET_MODE 176
-#endif
-#ifndef MAV_CMD_NAV_WAYPOINT
-#define MAV_CMD_NAV_WAYPOINT 16
-#endif
-#ifndef MAV_CMD_NAV_LOITER_UNLIM
-#define MAV_CMD_NAV_LOITER_UNLIM 17
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TURNS
-#define MAV_CMD_NAV_LOITER_TURNS 18
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TIME
-#define MAV_CMD_NAV_LOITER_TIME 19
-#endif
-#ifndef MAV_CMD_NAV_RETURN_TO_LAUNCH
-#define MAV_CMD_NAV_RETURN_TO_LAUNCH 20
-#endif
-#ifndef MAV_CMD_NAV_LAND
-#define MAV_CMD_NAV_LAND 21
-#endif
-#ifndef MAV_CMD_NAV_TAKEOFF
-#define MAV_CMD_NAV_TAKEOFF 22
-#endif
-#ifndef MAV_CMD_DO_REPOSITION
-#define MAV_CMD_DO_REPOSITION 192
-#endif
-#ifndef MAV_CMD_MISSION_START
-#define MAV_CMD_MISSION_START 300
-#endif
-#ifndef MAV_CMD_DO_SET_HOME
-#define MAV_CMD_DO_SET_HOME 179
-#endif
-#ifndef MAVLINK_MSG_ID_SET_MODE
-#define MAVLINK_MSG_ID_SET_MODE 11
-#endif
-#ifndef MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-#define MAV_MODE_FLAG_CUSTOM_MODE_ENABLED 1
-#endif
-#ifndef MAVLINK_MSG_ID_MISSION_SET_CURRENT
-#define MAVLINK_MSG_ID_MISSION_SET_CURRENT 41
-#endif
-#ifndef MAVLINK_MSG_ID_MANUAL_CONTROL
-#define MAVLINK_MSG_ID_MANUAL_CONTROL 69
-#endif
-#ifndef MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE
-#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE 70
-#endif
-
-#ifndef MAV_SEVERITY_WARNING
-#define MAV_SEVERITY_WARNING 4
-#endif
-#ifndef MAV_SEVERITY_NOTICE
-#define MAV_SEVERITY_NOTICE 5
-#endif
+#include "SharedConfig.h"
 
 // =====================================================
 // NODE UAV - OPTIMIZED MAVLINK-AWARE LORA BRIDGE - STATIS V18 PAYLOAD 78B MPCONNECT FIX
@@ -110,13 +31,6 @@
 #define SYNTHETIC_GCS_SYS_ID 255
 #define SYNTHETIC_GCS_COMP_ID 190
 
-// ================= Link Mode =================
-#define LINK_MODE_NORMAL       0
-#define LINK_MODE_PARAM_SYNC   1
-#define LINK_MODE_CALIBRATION  2
-#define LINK_MODE_MISSION      3
-#define LINK_MODE_FAILSAFE     4
-#define LINK_MODE_COMMAND      5
 uint8_t linkMode = LINK_MODE_NORMAL;
 
 // ================= Flight Command Priority Mode =================
@@ -202,29 +116,9 @@ char expectedParamExtId[17] = {0};
 unsigned long paramExtWriteAckUntilMs = 0;
 #define PARAM_EXT_WRITE_ACK_WINDOW_MS 12000UL
 
-// ================= Protocol =================
-#define PROTOCOL_VERSION       0x04
-#define NETWORK_ID             0x2244
-#define AUTH_TOKEN             0xA56C93D1UL  // Pre-shared secret: tidak lagi dikirim mentah; dipakai untuk auth-tag per paket.
-#define SECURITY_KEY_MIX        0x3D7F21B9UL
-#define SECURITY_ANTI_REPLAY_ENABLE 1
-#define SECURITY_MAX_COUNTER_GAP    5000UL
-#define SECURITY_REBOOT_GRACE_MS    15000UL
 
 // ================= LoRa Pins / RF =================
-#define LORA_SS    5
-#define LORA_RST   25
-#define LORA_DIO0  26
-#define LORA_DIO1  RADIOLIB_NC
-#define FREQ_MHZ      433.0
-#define LORA_BW_KHZ   500.0          // BW 500 kHz
-#define LORA_CR_DEN   8
-#define LORA_SYNC     0x12
 
-#define SF_MIN 7
-#define SF_MAX 12
-#define TP_MIN 10
-#define TP_MAX 16
 #define MSADR_TP_MIN 10
 #define MSADR_TP_MAX 16
 #define MSADR_TP_DEFAULT 14
@@ -244,26 +138,14 @@ unsigned long paramExtWriteAckUntilMs = 0;
 // Surgical fix: membuat node UAV bisa pulih sendiri setelah power-on tanpa perlu tombol reset manual.
 // Tidak mengubah LoRa PHY, payload, ACK policy, atau algoritma link.
 #define BOOT_STABILIZE_MS                 1500UL
-#define LORA_INIT_RETRY_COUNT             8
-#define LORA_INIT_RETRY_DELAY_MS          250UL
 #define LORA_BOOT_FAIL_RESTART_DELAY_MS   2000UL
 #define PIXHAWK_UART_RECOVERY_ENABLE      1
 #define PIXHAWK_BOOT_GRACE_MS             30000UL
 #define PIXHAWK_UART_SILENT_MS            12000UL
 #define PIXHAWK_UART_RECOVERY_MIN_GAP_MS  8000UL
 
-#define PKT_LINK_ACK          0xA5
-#define PKT_MAVLINK_RAW       0x4D
-#define PKT_CMD_COMPACT       0x43
-#define PKT_PARAM_BULK        0x50
-#define PKT_TELEM_BEACON      0x57
-#define PKT_CONFIG_PROPOSE    0xC0
-#define PKT_CONFIG_ACK        0xC1
 
-#define PROFILE_BEACON        0
 
-#define RAW_MAVLINK_MAX       235
-#define PARAM_BULK_MAX_RECORDS 9
 #define PARAM_BULK_QUEUE_SIZE  72
 #define PARAM_BULK_TX_INTERVAL_MS 0UL
 #define HIGH_QUEUE_SIZE       64
@@ -290,9 +172,6 @@ unsigned long paramExtWriteAckUntilMs = 0;
 #define INTERACTIVE_ESC_INTERVAL_US           5000000L
 
 #define METRICS_SUPPLY_VOLTAGE 3.30f
-#define LORA_PREAMBLE_SYMBOLS 12.0f
-#define LORA_PHY_CRC_ENABLED 1
-#define LORA_IMPLICIT_HEADER 0
 
 SPIClass spi(VSPI);
 SPISettings spiSettings(1000000, MSBFIRST, SPI_MODE0);
@@ -412,139 +291,21 @@ float lastGcsDownlinkRssi = -125.0f;
 float lastGcsDownlinkSnr = -64.0f;
 unsigned long lastGcsDownlinkMetricMs = 0;
 
-#define VALID_HEARTBEAT   (1UL << 0)
-#define VALID_ATTITUDE    (1UL << 1)
-#define VALID_GLOBAL_POS  (1UL << 2)
-#define VALID_VFR_HUD     (1UL << 3)
-#define VALID_SYS_STATUS  (1UL << 4)
-#define VALID_EKF         (1UL << 5)
-#define VALID_GPS_RAW     (1UL << 6)
 
 // ================= Struktur data untuk menyimpan data dari Pixhawk (lengkap) =================
-struct __attribute__((packed)) GpsRawDataFull {
-  uint64_t time_usec;
-  uint8_t fix_type;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  uint16_t eph;
-  uint16_t epv;
-  uint16_t vel;
-  uint16_t cog;
-  uint8_t satellites_visible;
-};
 
-struct __attribute__((packed)) PixhawkDataFull {
-  uint32_t valid_flags;
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t mav_type;
-  uint8_t autopilot;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-  float roll;
-  float pitch;
-  float yaw;
-  float rollspeed;
-  float pitchspeed;
-  float yawspeed;
-  int32_t lat;
-  int32_t lon;
-  int32_t alt_mm;
-  int32_t relative_alt_mm;
-  int16_t vx;
-  int16_t vy;
-  int16_t vz;
-  uint16_t hdg;
-  float airspeed;
-  float groundspeed;
-  int16_t heading;
-  uint16_t throttle;
-  float climb;
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-  uint16_t ekf_flags;
-  GpsRawDataFull gps;
-};
 
 // ================= Struktur data untuk payload beacon 78 byte =================
 // Teknik: semantic fixed-size compression. Data penting tetap dikirim 1 Hz,
 // tetapi float/field besar dipadatkan menjadi fixed-point agar paket LoRa total 78 byte.
-struct __attribute__((packed)) GpsDataRingkas {
-  uint8_t fix_type;
-  uint8_t satellites_visible;
-  int16_t alt_dm;      // GPS altitude dalam decimeter; GCS mengembalikan ke mm.
-  uint16_t eph;
-  uint16_t epv;
-}; // 8 byte
 
-struct __attribute__((packed)) PixhawkDataBeacon {
-  uint8_t valid_flags;       // VALID_* hanya memakai bit 0..6, cukup 8 bit.
-  uint8_t system_id;
-  uint8_t component_id;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-  uint8_t system_status;
-
-  int16_t roll_cd;           // centi-degree, dikonversi lagi ke radian di GCS.
-  int16_t pitch_cd;
-  int16_t yaw_cd;
-
-  int32_t lat;
-  int32_t lon;
-  int16_t relative_alt_dm;   // relative altitude dalam decimeter; GCS mengembalikan ke mm.
-
-  uint16_t voltage_battery;
-  int16_t current_battery;
-  int8_t battery_remaining;
-
-  uint16_t airspeed_cms;
-  uint16_t groundspeed_cms;
-  uint16_t heading;          // centi-degree, tetap kompatibel dengan VFR_HUD/GPS cog.
-  int16_t climb_cms;
-  uint8_t throttle;          // persen 0..100.
-
-  uint16_t ekf_flags;
-  GpsDataRingkas gps;
-}; // 49 byte
 
 // ================= Telemetry meta 9 byte =================
 // cnt_ack, success/fail streak, dan energy mJ tetap dipertahankan sesuai kebutuhan pengujian link.
-struct __attribute__((packed)) TelemetryMeta {
-  uint8_t cnt_ack;
-  uint16_t success_streak;
-  uint16_t fail_streak;
-  uint32_t telem_tx_energy_mJ_x100;
-};
 
 // ================= Header dan paket =================
-struct __attribute__((packed)) PacketHeader {
-  uint8_t type;
-  uint8_t protocol;
-  uint16_t network_id;
-  uint16_t crc;
-  uint32_t token;
-};
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
 
-struct __attribute__((packed)) TelemetryBeaconPacket {
-  PacketHeader hdr;
-  uint32_t counter;
-
-  // 3 byte radio/status ringkas:
-  // - radio_packed menyimpan SF, TP, profile dalam 1 byte.
-  // - remote_snr_x2 dan remote_rssi_q adalah kualitas downlink GCS->UAV yang diukur nyata oleh UAV.
-  uint8_t radio_packed;
-  int8_t remote_snr_x2;
-  uint8_t remote_rssi_q;
-
-  uint8_t link_mode;
-  uint16_t latency_x100;
-  TelemetryMeta meta;
-  PixhawkDataBeacon data;
-}; // Ukuran tetap: 78 byte
 static_assert(sizeof(GpsDataRingkas) == 8, "GpsDataRingkas harus 8 byte");
 static_assert(sizeof(PixhawkDataBeacon) == 49, "PixhawkDataBeacon harus 49 byte");
 static_assert(sizeof(TelemetryMeta) == 9, "TelemetryMeta harus 9 byte");
@@ -599,112 +360,15 @@ static inline int8_t loraSnrDbToX2(float snrDb) {
 #define TELEMETRY_BEACON_SENSOR_PAYLOAD_BYTES ((uint16_t)sizeof(PixhawkDataBeacon))
 
 // ================= Struktur lain yang diperlukan =================
-struct __attribute__((packed)) MavlinkRawPacket { PacketHeader hdr; uint8_t len; uint8_t payload[RAW_MAVLINK_MAX]; };
 
-#define COMPACT_CMD_KIND_ARM_DISARM   1
-#define COMPACT_CMD_KIND_SET_MODE     2
-#define COMPACT_CMD_KIND_COMMAND_LONG 3
-#define COMPACT_CMD_SCALE_1000        1000.0f
-#define COMPACT_CMD_SCALE_1E7         10000000.0f
 
-struct __attribute__((packed)) CompactCommandBasePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-};
 
-struct __attribute__((packed)) CompactArmDisarmPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t arm;
-  int32_t param2_x1000;
-};
-
-struct __attribute__((packed)) CompactSetModePacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint8_t target_system;
-  uint8_t base_mode;
-  uint32_t custom_mode;
-};
-
-struct __attribute__((packed)) CompactCommandLongPacket {
-  PacketHeader hdr;
-  uint16_t seq;
-  uint8_t kind;
-  uint16_t command;
-  uint8_t target_system;
-  uint8_t target_component;
-  uint8_t confirmation;
-  int32_t p1_x1000;
-  int32_t p2_x1000;
-  int32_t p3_x1000;
-  int32_t p4_x1000;
-  int32_t p5_x1e7;
-  int32_t p6_x1e7;
-  int32_t p7_x1000;
-};
 
 // Compact parameter transport khusus untuk mempercepat PARAM_VALUE Mission Planner.
 // Mission Planner tetap menerima MAVLink PARAM_VALUE standar karena GCS merekonstruksi ulang pesan MAVLink-nya.
-struct __attribute__((packed)) CompactParamValue {
-  float param_value;
-  uint16_t param_count;
-  uint16_t param_index;
-  char param_id[16];
-  uint8_t param_type;
-};
-struct __attribute__((packed)) ParamBulkPacket {
-  PacketHeader hdr;
-  uint8_t count;
-  uint8_t sysid;
-  uint8_t compid;
-  uint8_t reserved;
-  CompactParamValue rec[PARAM_BULK_MAX_RECORDS];
-};
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
 
-struct __attribute__((packed)) LinkAckPacket { PacketHeader hdr; uint32_t counter; };
-struct __attribute__((packed)) ConfigProposalPacket { PacketHeader hdr; uint32_t counter; uint32_t apply_counter; uint8_t current_sf; uint8_t current_tp; uint8_t next_sf; uint8_t next_tp; uint8_t next_profile; };
-struct __attribute__((packed)) ConfigAckPacket { PacketHeader hdr; uint32_t counter; uint32_t apply_counter; uint8_t accepted; uint8_t next_sf; uint8_t next_tp; uint8_t next_profile; };
-
-// Forward declarations used before the Arduino preprocessor generates prototypes.
-// Penting untuk Arduino IDE: tanpa deklarasi eksplisit ini, auto-prototype Arduino
-// dapat ditempatkan sebelum struct custom seperti MavlinkRawPacket/ParamBulkPacket
-// sehingga compile gagal: 'MavlinkRawPacket was not declared in this scope'.
-uint8_t profileForSF(int sf);
-bool isFlightActionCommandId(uint16_t command);
-bool peekHighRawPacket(MavlinkRawPacket &pkt);
-bool peekLowRawPacket(MavlinkRawPacket &pkt);
-void pushExistingHighRawPacket(const MavlinkRawPacket &pkt);
-bool rawPacketContainsCommandAck(const MavlinkRawPacket &pkt, uint16_t command);
-bool peekParamBulkPacket(ParamBulkPacket &pkt);
-void popParamBulkPacket();
-bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid);
-bool appendParamToBulk(const mavlink_message_t &msg);
-#ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-void cacheMagCalProgressForGCS(const mavlink_message_t &msg);
-bool hasPendingMagCalProgress();
-bool buildMagCalProgressRawPacket(MavlinkRawPacket &raw, uint8_t *sentIds, uint8_t &sentCount);
-bool sendPendingMagCalProgressToGCS();
-#endif
-
-PixhawkDataFull pixDataFull;
-MavlinkRawPacket highQueue[HIGH_QUEUE_SIZE];
-uint16_t highHead = 0, highTail = 0, highCount = 0;
-MavlinkRawPacket lowQueue[LOW_QUEUE_SIZE];
-uint16_t lowHead = 0, lowTail = 0, lowCount = 0;
-ParamBulkPacket paramBulkQueue[PARAM_BULK_QUEUE_SIZE];
-uint16_t paramBulkHead = 0, paramBulkTail = 0, paramBulkCount = 0;
-
-#ifdef MAVLINK_MSG_ID_MAG_CAL_PROGRESS
-mavlink_message_t magCalProgressCache[MAG_CAL_COMPASS_MAX];
-bool magCalProgressPending[MAG_CAL_COMPASS_MAX] = {false};
 uint8_t magCalProgressNextId = 0;
 unsigned long lastMagCalProgressTxMs = 0;
 uint32_t magCalProgressCachedCount = 0;
