@@ -502,6 +502,12 @@ bool peekCompactCommandPacket(CompactCommandQueueItem &item);
 void popCompactCommandPacket();
 void flushCompactCommandQueue();
 bool enqueueCompactCommandFromMissionPlanner(const mavlink_message_t &msg, uint16_t commandIdForAck);
+bool shouldProxyAckForCommand(uint16_t command);
+unsigned long paramSyncNoValueExitForSF(uint8_t sf);
+unsigned long paramSyncIdleExitForSF(uint8_t sf);
+void startCalibrationConfigMode();
+void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, uint8_t profile, uint8_t mode, uint16_t latency_x100, uint16_t packetSize, const TelemetryMeta &meta);
+
 
 // ================= Variabel global =================
 int activeSF = SF_MIN;

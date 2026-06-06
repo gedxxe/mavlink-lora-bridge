@@ -408,7 +408,41 @@ unsigned long lastGcsDownlinkMetricMs = 0;
 #define VALID_GPS_RAW     (1UL << 6)
 
 // ================= Struktur data untuk menyimpan data dari Pixhawk (lengkap) =================
-// Shared struct definitions moved to TelemetryProtoFix.h
+struct __attribute__((packed)) PixhawkDataFull {
+  uint32_t valid_flags;
+  uint8_t system_id;
+  uint8_t component_id;
+  uint8_t mav_type;
+  uint8_t autopilot;
+  uint8_t base_mode;
+  uint32_t custom_mode;
+  uint8_t system_status;
+  float roll;
+  float pitch;
+  float yaw;
+  float rollspeed;
+  float pitchspeed;
+  float yawspeed;
+  int32_t lat;
+  int32_t lon;
+  int32_t alt_mm;
+  int32_t relative_alt_mm;
+  int16_t vx;
+  int16_t vy;
+  int16_t vz;
+  uint16_t hdg;
+  float airspeed;
+  float groundspeed;
+  int16_t heading;
+  uint16_t throttle;
+  float climb;
+  uint16_t voltage_battery;
+  int16_t current_battery;
+  int8_t battery_remaining;
+  uint16_t ekf_flags;
+  GpsRawDataFull gps;
+};
+
 
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
