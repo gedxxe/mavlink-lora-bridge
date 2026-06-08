@@ -51,12 +51,10 @@ No source file uses the old `clean_` prefix.
 
 ### Not Yet Validated On Hardware
 
-- Arduino compile was not yet confirmed in this cleanup pass.
 - Mission Planner behavior at SF7, SF8, and SF9 still needs bench validation with real GCS/UAV hardware.
 - SF10-SF12 monitoring mode needs runtime confirmation that telemetry cadence remains stable while Mission Planner attempts auto parameter reads.
 - Compass calibration needs bench validation that `MAG_CAL_PROGRESS`, `MAG_CAL_REPORT`, `COMMAND_ACK`, and setup parameter reads update Mission Planner continuously.
 - Accel, level, and simple accel calibration need bench validation that Mission Planner receives real ACK/status and advances each prompt once.
-- SF7 two-minute parameter-sync target is not proven by static audit.
 
 
 ## Repository Structure
@@ -91,8 +89,6 @@ mavlink-lora-bridge/
 |-- LICENSE
 `-- README.md
 ```
-
-The two `src/common` folders are intentionally duplicated because Arduino IDE builds each sketch from its own sketch directory. Parent-directory includes were already shown to be fragile in this project. The removed `firmware/common` folder was a third copy that was not used by either sketch build path.
 
 The two common header sets must remain byte-identical:
 
@@ -157,50 +153,50 @@ Let:
 
 Symbol duration:
 
-```text
+$$
 T_sym = (2^SF) / BW
-```
+$$
 
 Preamble duration:
 
-```text
+$$
 T_preamble = (Npreamble + 4.25) * T_sym
-```
+$$
 
 Payload symbol count, following the Semtech SX1276/77/78/79 LoRa packet model:
 
-```text
+$$
 N_payload = 8 + max(
   ceil((8*PL - 4*SF + 28 + 16*CRC - 20*IH) / (4*(SF - 2*DE))) * CR,
   0
 )
-```
+$$
 
 Payload duration:
 
-```text
+$$
 T_payload = N_payload * T_sym
-```
+$$
 
 Packet time-on-air:
 
-```text
+$$
 T_packet = T_preamble + T_payload
-```
+$$
 
-The important engineering consequence is exponential airtime growth with `SF`, because `T_sym` is proportional to `2^SF`. For a fixed packet size and bandwidth, moving from SF7 to SF12 increases symbol duration by a factor of:
+The important engineering consequence is exponential airtime growth with `SF`, because $T_sym$ is proportional to $2^SF$. For a fixed packet size and bandwidth, moving from SF7 to SF12 increases symbol duration by a factor of:
 
-```text
+$$
 2^(12 - 7) = 32
-```
+$$
 
 This does not mean every packet is exactly 32 times longer because payload symbol count also changes, but it correctly captures the dominant scaling.
 
 Nominal LoRa physical-layer bit rate can be approximated as:
 
-```text
+$$
 R_b = SF * BW * (4 / CR) / (2^SF)
-```
+$$
 
 This is a PHY approximation. It does not include preamble, header, CRC, half-duplex guard time, retransmission, or queueing delay.
 
@@ -214,37 +210,37 @@ For a periodic traffic class `i`, define:
 
 Approximate channel utilization:
 
-```text
+$$
 U = sum((T_i + G_i) / P_i)
-```
+$$
 
 The link should be operated with margin:
 
-```text
+$$
 U < U_max
-```
+$$
 
-where `U_max` must be below 1.0 for a real system because LoRa reception windows, MCU scheduling jitter, retransmission, Mission Planner retries, and ArduPilot stream bursts consume residual airtime. The exact margin must be validated on hardware; it cannot be proven from source code alone.
+where $U_max$ must be below 1.0 for a real system because LoRa reception windows, MCU scheduling jitter, retransmission, Mission Planner retries, and ArduPilot stream bursts consume residual airtime. The exact margin must be validated on hardware; it cannot be proven from source code alone.
 
 For packet delivery ratio:
 
-```text
+$$
 PDR = N_rx_valid / N_tx
-```
+$$
 
 For one-way or command-to-feedback latency:
 
-```text
+$$
 L = t_feedback_received - t_command_sent
-```
+$$
 
 For transmit energy:
 
-```text
+$$
 E_tx = V_supply * I_tx(TP) * T_packet
-```
+$$
 
-where `I_tx(TP)` depends on the module, PA path, supply voltage, board layout, and configured transmit power. The helper in `TelemetryProtoFix.h` is an estimate, not a substitute for current measurement.
+where $I_tx(TP)$ depends on the module, PA path, supply voltage, board layout, and configured transmit power. The helper in `TelemetryProtoFix.h` is an estimate, not a substitute for current measurement.
 
 ## MAVLink Traffic Implications
 
@@ -255,11 +251,11 @@ MAVLink parameter get operations are bulk operations:
 - `PARAM_SET` expects a `PARAM_VALUE` acknowledgement after the set attempt.
 - Extended parameters follow the same request/response pattern with `PARAM_EXT_*`.
 
-If the number of parameters is `N_param` and the average encoded response packet airtime is `T_param`, the lower-bound airtime for a full parameter list is:
+If the number of parameters is $N_param$ and the average encoded response packet airtime is $T_param$, the lower-bound airtime for a full parameter list is:
 
-```text
+$$
 T_param_list >= N_param * T_param
-```
+$$
 
 This lower bound excludes half-duplex ACK slots, retries, queueing delay, Mission Planner gap-fill reads, and ArduPilot pacing. Therefore full parameter sync is allowed only on SF7-SF9 in this firmware.
 
@@ -288,10 +284,10 @@ If:
 
 then a practical lower-bound model is:
 
-```text
+$$
 N_bulk >= ceil(N_param / R_bulk(SF))
 T_sync >= N_bulk * (T_bulk(SF, PL) + T_ack(SF)) + N_retry * T_retry(SF)
-```
+$$
 
 This is still optimistic because it excludes Mission Planner gap-fill reads, ArduPilot scheduling jitter, serial buffering, and RF retransmission. The current SF7 optimization keeps the RF payload format unchanged and only changes the profile policy:
 
@@ -359,31 +355,6 @@ Removed in the current cleanup pass:
 - unused local `paramIdStartsWith()` and `paramIdEquals()` wrappers.
 - stale sketch-local `PARAM_BULK_FILL_GRACE_SF*` constants;
 - sketch-local async parameter retry and bulk fill-window constants now represented by `LinkProfile.h`.
-
-Retained intentionally:
-
-- one `src/common` header set under GCS;
-- one `src/common` header set under UAV.
-
-This retained duplication is an Arduino build-layout constraint, not an independent protocol fork. Static checks compare the two header sets by hash.
-
-## Validation Status
-
-Static checks performed in this environment:
-
-- quoted relative includes resolve;
-- GCS and UAV `src/common` headers are byte-identical;
-- GCS and UAV sketch preprocessor conditional stacks are balanced;
-- no `clean_` source files remain;
-- no targeted duplicate command/link/protocol macro definitions remain in the main sketches.
-- `LinkProfile.h` policy copies were kept byte-identical after the SF7 parameter-sync optimization.
-
-Not yet performed in this environment:
-
-- Arduino compile, because `arduino-cli`, `arduino`, and `pio` are not available in PATH;
-- Mission Planner bench test at SF7/SF8/SF9;
-- high-SF negative test proving parameter get is blocked while telemetry remains live;
-- hardware measurement of command-to-ACK latency and PDR.
 
 ## Current Problem Audit Status
 
@@ -457,9 +428,6 @@ Action:
 - Removed sketch-local redefinitions for `PKT_*`, `LORA_PHY_CRC_ENABLED`, `LORA_IMPLICIT_HEADER`, `COMPACT_CMD_MAX_LEN`, MAVLink command fallbacks, and link modes.
 - Removed unused `RADIOLIB_ERR_UNKNOWN`, `paramIdStartsWith()`, and `paramIdEquals()` sketch definitions.
 
-Remaining limitation:
-
-- `TelemetryProtoFix.h`, `LinkProfile.h`, and `BridgeMavlinkPolicy.h` still exist in two physical locations, one per Arduino sketch. This is intentional for Arduino IDE compatibility; byte identity is verified statically. The unused third copy under `firmware/common` was removed.
 
 ### Battery Telemetry
 
