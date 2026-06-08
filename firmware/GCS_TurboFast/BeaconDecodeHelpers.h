@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <Arduino.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 #include <MAVLink_ardupilotmega.h>
 
 // Forward declarations of GCS global states

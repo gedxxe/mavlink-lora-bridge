@@ -56,6 +56,7 @@ struct ConfigAckPacket;
 #define PKT_CMD_COMPACT       0x43
 #define PKT_PARAM_BULK        0x50
 #define PKT_TELEM_BEACON      0x57
+#define PKT_PARAM_DEBUG       0x58  // Best-effort debug snapshot; never required for telemetry/param sync
 #define PKT_CONFIG_PROPOSE    0xC0
 #define PKT_CONFIG_ACK        0xC1
 
@@ -156,13 +157,17 @@ struct __attribute__((packed)) GpsDataRingkas {
 };
 
 // ---------------------------------------------------------------------------
-// Telemetry link meta — 9 bytes, used for link quality reporting
+// Telemetry link meta — 9 bytes
+//
+// Keep the high-rate beacon compact. Debug counters are deliberately moved to
+// PKT_PARAM_DEBUG so SF7 Turbo is not slowed by diagnostic fields in every
+// telemetry packet. This restores TelemetryBeaconPacket to 109 bytes OTA.
 // ---------------------------------------------------------------------------
 struct __attribute__((packed)) TelemetryMeta {
-  uint8_t  cnt_ack;                   // Successful ACKs in last 10 beacon windows
+  uint8_t  cnt_ack;                  // Successful ACKs in last 10 beacon windows
   uint16_t success_streak;
   uint16_t fail_streak;
-  uint32_t telem_tx_energy_mJ_x100;  // Cumulative TX energy × 100 (mJ)
+  uint32_t telem_tx_energy_mJ_x100; // Cumulative TX energy × 100 (mJ)
 };
 
 // ---------------------------------------------------------------------------
@@ -243,6 +248,25 @@ struct __attribute__((packed)) TelemetryBeaconPacket {
   uint16_t         latency_x100;   // Half-RTT × 100 ms
   TelemetryMeta    meta;
   PixhawkDataBeacon data;
+};
+
+// Best-effort debug snapshot, sent rarely (20 s by default) so diagnostics do
+// not inflate every beacon. The GCS stores the latest snapshot and prints it in
+// MetricsSerial next to normal telemetry rows. No ACK/retry is required.
+struct __attribute__((packed)) ParamDebugPacket {
+  PacketHeader hdr;
+  uint16_t dbg_async_start;
+  uint16_t dbg_async_req_tx;
+  uint16_t dbg_async_retry;
+  uint16_t dbg_param_bulk_queued;
+  uint16_t dbg_param_bulk_tx;
+  uint16_t dbg_param_bulk_ack;
+  uint16_t dbg_param_bulk_fail;
+  uint16_t dbg_param_value_drop;
+  uint16_t dbg_full_param_blocked;
+  uint16_t dbg_async_index;
+  uint16_t dbg_async_total;
+  uint8_t  dbg_param_state;
 };
 
 // ---------------------------------------------------------------------------
@@ -563,8 +587,9 @@ static inline bool validatePacketInternal(const uint8_t *buf, size_t len,
 // =============================================================================
 static_assert(sizeof(PacketHeader)        == 10,  "PacketHeader must be 10 bytes");
 static_assert(sizeof(GpsDataRingkas)      == 8,   "GpsDataRingkas must be 8 bytes");
-static_assert(sizeof(TelemetryMeta)       == 9,   "TelemetryMeta must be 9 bytes");
+static_assert(sizeof(TelemetryMeta)       == 9,   "TelemetryMeta must be 9 bytes in compact beacon build");
 static_assert(sizeof(PixhawkDataBeacon)   == 80,  "PixhawkDataBeacon must be 80 bytes");
-static_assert(sizeof(TelemetryBeaconPacket) == 109, "TelemetryBeaconPacket must be 109 bytes");
+static_assert(sizeof(TelemetryBeaconPacket) == 109, "TelemetryBeaconPacket must be 109 bytes in compact beacon build");
+static_assert(sizeof(ParamDebugPacket)     == 33,  "ParamDebugPacket must be 33 bytes");
 
 #endif // TELEMETRY_PROTO_FIX_H

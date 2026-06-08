@@ -2,7 +2,7 @@
 #define UAV_CALIB_HELPERS_H
 
 #include <Arduino.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 #include <MAVLink_ardupilotmega.h>
 
 // Extern declarations of UAV global states

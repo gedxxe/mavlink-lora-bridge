@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 
 // Extern references to variables in GCS sketch
 extern SX1278 radio;

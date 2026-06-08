@@ -2,7 +2,7 @@
 #define GCS_COMMAND_QUEUE_H
 
 #include <Arduino.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 #include <MAVLink_ardupilotmega.h>
 
 // Extern references to variables in GCS sketch

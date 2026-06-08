@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <math.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 
 // Forward declarations of UAV global states
 struct PixhawkDataFull;
@@ -66,9 +66,29 @@ inline void fillBeacon(PixhawkDataBeacon &d) {
   d.yaw_cd   = radToCentiDegInt16(pixDataFull.yaw);
 
   // ── Position ────────────────────────────────────
+  // Primary source: GLOBAL_POSITION_INT. Some ArduPilot builds suppress this
+  // until EKF has a usable global solution. In that case GPS_RAW_INT may still
+  // contain a 2D/3D GPS coordinate earlier than GLOBAL_POSITION_INT.
+  //
+  // Display rule used by the bridge:
+  //   - never fabricate position when GPS has no coordinate;
+  //   - if GLOBAL_POSITION_INT is missing but GPS_RAW_INT has a real 2D/3D
+  //     coordinate, use it as a display-only GLOBAL_POSITION fallback so
+  //     Mission Planner can place the vehicle icon on the map;
+  //   - if fix_type is 0/1 or lat/lon are zero, keep GLOBAL_POSITION invalid.
   d.lat             = pixDataFull.lat;
   d.lon             = pixDataFull.lon;
   d.relative_alt_dm = mmToDecimeterInt16(pixDataFull.relative_alt_mm);
+
+  if (!(pixDataFull.valid_flags & VALID_GLOBAL_POS) &&
+      (pixDataFull.valid_flags & VALID_GPS_RAW) &&
+      pixDataFull.gps.fix_type >= 2 &&
+      (pixDataFull.gps.lat != 0 || pixDataFull.gps.lon != 0)) {
+    d.lat = pixDataFull.gps.lat;
+    d.lon = pixDataFull.gps.lon;
+    d.relative_alt_dm = mmToDecimeterInt16(pixDataFull.gps.alt_mm);
+    d.valid_flags |= VALID_GLOBAL_POS;
+  }
 
   // ── Battery ─────────────────────────────────────
   d.voltage_battery   = pixDataFull.voltage_battery;

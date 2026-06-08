@@ -1,5 +1,7 @@
 #include <SPI.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
+#include "src/common/LinkProfile.h"
+#include "src/common/BridgeMavlinkPolicy.h"
 #include "BeaconDecodeHelpers.h"
 #include <RadioLib.h>
 #include <MAVLink_ardupilotmega.h>
@@ -11,119 +13,11 @@
 #define UINT8_MAX 255
 #endif
 
-#ifndef RADIOLIB_ERR_UNKNOWN
-#define RADIOLIB_ERR_UNKNOWN -999
-#endif
-
-#ifndef MAVLINK_COMM_2
-#define MAVLINK_COMM_2 2
-#endif
-
-#ifndef MAVLINK_MSG_ID_SET_MODE
-#define MAVLINK_MSG_ID_SET_MODE 11
-#endif
-#ifndef MAVLINK_MSG_ID_MISSION_SET_CURRENT
-#define MAVLINK_MSG_ID_MISSION_SET_CURRENT 41
-#endif
-#ifndef MAVLINK_MSG_ID_MISSION_CLEAR_ALL
-#define MAVLINK_MSG_ID_MISSION_CLEAR_ALL 45
-#endif
-#ifndef MAVLINK_MSG_ID_MANUAL_CONTROL
-#define MAVLINK_MSG_ID_MANUAL_CONTROL 69
-#endif
-#ifndef MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE
-#define MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE 70
-#endif
-
-// Mission Planner / ArduPilot command IDs.
-#define CMD_DO_SET_MODE               176
-#ifndef MAV_CMD_DO_SET_MODE
-#define MAV_CMD_DO_SET_MODE 176
-#endif
-#define CMD_COMPONENT_ARM_DISARM      400
-#ifndef MAV_CMD_COMPONENT_ARM_DISARM
-#define MAV_CMD_COMPONENT_ARM_DISARM 400
-#endif
-#define CMD_PREFLIGHT_CALIBRATION     241
-#define CMD_PREFLIGHT_STORAGE         245
-#define CMD_PREFLIGHT_REBOOT_SHUTDOWN 246
-#define CMD_START_RX_PAIR             500
-#define CMD_DO_START_MAG_CAL          42424
-#define CMD_DO_ACCEPT_MAG_CAL         42425
-#define CMD_DO_CANCEL_MAG_CAL         42426
-#define CMD_ACCELCAL_VEHICLE_POS      42429
-#ifndef MAV_CMD_SET_MESSAGE_INTERVAL
-#define MAV_CMD_SET_MESSAGE_INTERVAL 511
-#endif
-#ifndef MAV_CMD_REQUEST_MESSAGE
-#define MAV_CMD_REQUEST_MESSAGE 512
-#endif
-#ifndef MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES
-#define MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES 520
-#endif
-
-#ifndef MAV_SEVERITY_CRITICAL
-#define MAV_SEVERITY_CRITICAL 2
-#endif
-#ifndef MAV_SEVERITY_NOTICE
-#define MAV_SEVERITY_NOTICE 5
-#endif
-#ifndef MAV_SEVERITY_INFO
-#define MAV_SEVERITY_INFO 6
-#endif
-#ifndef MAV_RESULT_ACCEPTED
-#define MAV_RESULT_ACCEPTED 0
-#endif
-#ifndef MAV_RESULT_DENIED
-#define MAV_RESULT_DENIED 2
-#endif
-#ifndef MAV_RESULT_FAILED
-#define MAV_RESULT_FAILED 4
-#endif
-
-#ifndef MAV_CMD_NAV_WAYPOINT
-#define MAV_CMD_NAV_WAYPOINT 16
-#endif
-#ifndef MAV_CMD_NAV_LOITER_UNLIM
-#define MAV_CMD_NAV_LOITER_UNLIM 17
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TURNS
-#define MAV_CMD_NAV_LOITER_TURNS 18
-#endif
-#ifndef MAV_CMD_NAV_LOITER_TIME
-#define MAV_CMD_NAV_LOITER_TIME 19
-#endif
-#ifndef MAV_CMD_NAV_RETURN_TO_LAUNCH
-#define MAV_CMD_NAV_RETURN_TO_LAUNCH 20
-#endif
-#ifndef MAV_CMD_NAV_LAND
-#define MAV_CMD_NAV_LAND 21
-#endif
-#ifndef MAV_CMD_NAV_TAKEOFF
-#define MAV_CMD_NAV_TAKEOFF 22
-#endif
-#ifndef MAV_CMD_DO_REPOSITION
-#define MAV_CMD_DO_REPOSITION 192
-#endif
-#ifndef MAV_CMD_MISSION_START
-#define MAV_CMD_MISSION_START 300
-#endif
-#ifndef MAV_CMD_DO_SET_HOME
-#define MAV_CMD_DO_SET_HOME 179
-#endif
-
 // =====================================================
 // GROUND CONTROL STATION (GCS) NODE - OPTIMIZED MAVLINK-AWARE LORA TELEMETRY BRIDGE
 // Receive compact telemetry beacon packets from UAV and reconstruct MAVLink streams
 // =====================================================
 
-// ================= Link Mode =================
-#define LINK_MODE_NORMAL       0
-#define LINK_MODE_PARAM_SYNC   1
-#define LINK_MODE_CALIBRATION  2
-#define LINK_MODE_MISSION      3
-#define LINK_MODE_FAILSAFE     4
-#define LINK_MODE_COMMAND      5
 uint8_t linkMode = LINK_MODE_NORMAL;
 
 // ================= Flight Command Priority Mode =================
@@ -203,10 +97,6 @@ uint32_t calStatustextRxCount = 0;
 
 #define PARAM_SYNC_TIMEOUT_MS       600000UL
 #define PARAM_SYNC_IDLE_EXIT_MS       15000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9 20000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF10  20000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF11  10000UL
-#define PARAM_SYNC_NO_VALUE_EXIT_MS_SF12   8000UL
 #define PARAM_MODE_HOLD_MS           5000UL
 // Full parameter download at SF11/SF12 is intentionally blocked by default.
 // It prevents Mission Planner auto-param sync from stalling the telemetry link.
@@ -214,7 +104,7 @@ uint32_t calStatustextRxCount = 0;
 #define FULL_PARAM_SYNC_MAX_SF 9
 #define HIGH_SF_PARAM_NOTICE_INTERVAL_MS 5000UL
 // Spreading factors SF10-SF12 are optimized for command and telemetry monitoring, not for full parameter synchronization.
-// Block full-list requests and non-interactive PARAM_REQUEST_READ at high SF.
+// Block all get-parameter requests at high SF.
 #define BLOCK_PARAM_READ_HIGH_SF 1
 #define LORA_PARAM_NOTICE_MIN_INTERVAL_MS 3000UL
 #define ARM_FEEDBACK_HOLD_MS 15000UL
@@ -271,9 +161,9 @@ uint32_t paramReadBlockedHighSfCount = 0;
 
 // LoRa RF Channel Configuration
 // [Tuning Guideline] Must match exactly between GCS and UAV nodes.
-// Range: 410.0 MHz to 525.0 MHz (for 433 MHz modules) or 860.0 MHz to 930.0 MHz (for 915 MHz modules).
+// Configured here for 420 MHz operation. Must match exactly on GCS and UAV and comply with local spectrum rules.
 // Impact: Changing the frequency helps avoid local RF interference or align with legal ISM band standards in your region.
-#define FREQ_MHZ      433.0
+#define FREQ_MHZ      420.0
 
 // LoRa Bandwidth (kHz)
 // [Tuning Guideline] Higher bandwidth enables higher data transmission rate (less airtime/latency), 
@@ -285,7 +175,7 @@ uint32_t paramReadBlockedHighSfCount = 0;
 // [Tuning Guideline] Code rate is 4/(LORA_CR_DEN). Options: 5 (CR 4/5), 6 (CR 4/6), 7 (CR 4/7), 8 (CR 4/8).
 // Impact: Higher CR denominator increases error-correction redundancy (better link robustness in noise), 
 // but increases packet airtime and latency.
-#define LORA_CR_DEN   8
+#define LORA_CR_DEN   5  // CR 4/5 for this diagnostic build. Keep this value identical on GCS and UAV.
 
 // LoRa Sync Word
 // [Tuning Guideline] Must match between GCS and UAV. Range: 0x00 to 0xFF.
@@ -313,11 +203,11 @@ uint32_t paramReadBlockedHighSfCount = 0;
 #define PHY_TEST_LOCK_INITIAL_SF 0
 
 // GCS Transmit Power Configurations
-// [Tuning Guideline] Range: 10 to 16 dBm (depending on hardware limit).
+// [Tuning Guideline] Range: 10 to 20 dBm. Confirm your SX1278 PA path/regulatory limit before field use.
 // Impact: Higher transmit power improves signal strength at the UAV receiver, but increases GCS power consumption.
-#define GCS_FIXED_TP 16
+#define GCS_FIXED_TP 20
 #define TP_MIN 10
-#define TP_MAX 16
+#define TP_MAX 20
 
 // Initial Transmit Power
 // [Tuning Guideline] Initial transmit power for GCS. Will auto-adjust to match the UAV's power once locked.
@@ -325,41 +215,32 @@ uint32_t paramReadBlockedHighSfCount = 0;
 
 #define RX_TIMEOUT_MS            1000UL  // fallback; loop memakai rxTimeoutForSF()
 #define LINK_IDLE_SCAN_AFTER_MS  2500UL  // fallback; recovery memakai linkIdleScanAfterForSF()
-#define RECOVERY_SCAN_STEP_MS     700UL
+#define RECOVERY_SCAN_STEP_MS     120UL
 #define DOWNLINK_TX_GUARD_MS      8UL
-#define SCHEDULED_CONFIG_STUCK_MS 15000UL
+
+// PARAM_BULK ACK guard: SX127x is half-duplex. If GCS transmits ACK too soon
+// after receiving a bulk, the UAV may not have switched into RX yet, producing
+// false bulk_fail/retransmit even with strong RSSI. 20 ms is a conservative
+// SF7-safe guard; raise to 30 ms if bulk_fail remains high.
+#define PARAM_BULK_ACK_GUARD_MS   15UL  // Turbo V4: shorter guard after stable ACK logs; raise to 25 if bulk_fail rises.
+#define SCHEDULED_CONFIG_STUCK_MS 8000UL
 
 #define METRICS_WINDOW_SIZE       32
 #define HEARTBEAT_SYNTH_INTERVAL_MS 1000UL
 #define TELEMETRY_ACK_DECIMATION_ENABLE 1
 
-#define PKT_LINK_ACK          0xA5
-#define PKT_MAVLINK_RAW       0x4D
-#define PKT_CMD_COMPACT       0x43
-#define PKT_PARAM_BULK        0x50
-#define PKT_TELEM_BEACON      0x57
-#define PKT_CONFIG_PROPOSE    0xC0
-#define PKT_CONFIG_ACK        0xC1
-
-// PROFILE_BEACON moved to TelemetryProtoFix.h
-
-// RAW_MAVLINK_MAX moved to TelemetryProtoFix.h
-// PARAM_BULK_MAX_RECORDS moved to TelemetryProtoFix.h
 #define RAW_HIGH_QUEUE_SIZE   64
 #define RAW_LOW_QUEUE_SIZE    96
 #define COMPACT_CMD_QUEUE_SIZE 16
-// LORA_RX_MAX moved to TelemetryProtoFix.h
 
 #define REPEAT_SET_MODE             1
 #define REPEAT_ARM_DISARM           1
 #define REPEAT_CALIBRATION_COMMAND  1
 #define REPEAT_PARAM_SET            2
 #define REPEAT_NORMAL_COMMAND       1
-#define CALIBRATION_DEDUP_MS     2200UL
+#define CALIBRATION_DEDUP_MS      700UL
 
 #define LORA_PREAMBLE_SYMBOLS 8.0f
-#define LORA_PHY_CRC_ENABLED 1
-#define LORA_IMPLICIT_HEADER 0
 
 #define LORA_INIT_RETRY_COUNT 8
 #define LORA_INIT_RETRY_DELAY_MS 250
@@ -378,6 +259,58 @@ uint32_t paramReadBlockedHighSfCount = 0;
 // ================= Variables for Link Quality and Metrics =================
 float lastRssi = -120.0f;
 float lastSnr = 0.0f;
+
+// -----------------------------------------------------------------------------
+// Real LoRa RSSI/SNR capture.
+// RSSI dBm harus ditampilkan apa adanya, bukan di-clamp ke -17..-14.
+// lastRssiRaw  = nilai RSSI paket terakhir, untuk serial monitor.
+// lastRssi     = nilai RSSI terfilter ringan, untuk perhitungan kualitas link.
+// -----------------------------------------------------------------------------
+#ifndef GCS_RSSI_FILTER_ALPHA
+#define GCS_RSSI_FILTER_ALPHA 0.35f
+#endif
+
+float lastRssiRaw = -120.0f;
+unsigned long lastRssiUpdateMs = 0;
+
+// Forward declaration agar fungsi di bawah boleh memanggil radio.getRSSI()
+// walaupun objek radio baru didefinisikan setelah blok ini.
+extern SX1278 radio;
+
+static inline bool isValidLoRaRssiDbm(float rssiDbm) {
+  return !isnan(rssiDbm) && rssiDbm <= 0.0f && rssiDbm >= -170.0f;
+}
+
+static inline bool isValidLoRaSnrDb(float snrDb) {
+  return !isnan(snrDb) && snrDb > -30.0f && snrDb < 30.0f;
+}
+
+void captureLoRaRxMetrics() {
+  float rssiNow = radio.getRSSI();
+  float snrNow  = radio.getSNR();
+
+  if (isValidLoRaRssiDbm(rssiNow)) {
+    lastRssiRaw = rssiNow;
+
+    if (lastRssiUpdateMs == 0) {
+      lastRssi = rssiNow;
+    } else {
+      lastRssi = lastRssi + (GCS_RSSI_FILTER_ALPHA * (rssiNow - lastRssi));
+    }
+  }
+
+  if (isValidLoRaSnrDb(snrNow)) {
+    lastSnr = snrNow;
+  }
+
+  lastRssiUpdateMs = millis();
+}
+
+// Tetap disediakan agar kode lama yang masih memanggil fungsi ini tidak error.
+// Sekarang fungsi ini tidak lagi melakukan clamp palsu.
+float gcsRssiForDisplayAndQuality(float rssiDbm) {
+  return rssiDbm;
+}
 unsigned long lastRadioStatusMs = 0;
 #define RADIO_STATUS_INTERVAL_MS 500
 #define MP_SIGNAL_MIN_LIVE_PCT 5
@@ -455,6 +388,7 @@ unsigned long lastRadioStatusMs = 0;
 // if remrssi is sent as UINT8_MAX/unknown. Maintain single-source identity; just mirror
 // the local RSSI value to remrssi for Mission Planner UI compatibility. Does not alter LoRa PHY.
 #define MP_MIRROR_RSSI_TO_REMRSSI_FOR_MP_UI 1
+
 #define MP_RADIO_ZERO_BURST_AFTER_LOSS_MS 2500UL
 
 // Link Loss Indicator:
@@ -489,7 +423,6 @@ HardwareSerial MetricsSerial(2);
 #define RAW_PKT_HEADER_LEN (sizeof(PacketHeader) + 1)
 #define PARAM_BULK_BASE_LEN (sizeof(PacketHeader) + 4)
 #define PARAM_BULK_LEN(n) (PARAM_BULK_BASE_LEN + ((uint16_t)(n) * sizeof(CompactParamValue)))
-#define COMPACT_CMD_MAX_LEN sizeof(CompactCommandLongPacket)
 
 #include "GCSRadioHelpers.h"
 #include "GCSCommandQueue.h"
@@ -515,6 +448,7 @@ void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t s
 int activeSF = SF_MIN;
 int activeTP = GCS_DEFAULT_TP;
 int scanSF = SF_MIN;
+uint8_t scanProfileStep = 0;
 uint8_t recoveryStep = 0;
 
 bool scheduledConfig = false;
@@ -539,6 +473,28 @@ uint32_t telemetryPayloadBytesRx = 0;
 uint32_t paramRequestCount = 0;
 uint32_t paramValueCount = 0;
 uint32_t paramBulkRxCount = 0;
+uint32_t paramBulkDuplicateDrop = 0;
+
+// Latest UAV-side parameter debug snapshot. The high-rate beacon is 109 bytes;
+// these values are updated only by PKT_PARAM_DEBUG (about every 20 seconds).
+uint16_t uavDbgAsyncStart = 0;
+uint16_t uavDbgAsyncReqTx = 0;
+uint16_t uavDbgAsyncRetry = 0;
+uint16_t uavDbgParamBulkQueued = 0;
+uint16_t uavDbgParamBulkTx = 0;
+uint16_t uavDbgParamBulkAck = 0;
+uint16_t uavDbgParamBulkFail = 0;
+uint16_t uavDbgParamValueDrop = 0;
+uint16_t uavDbgFullParamBlocked = 0;
+uint16_t uavDbgAsyncIndex = 0;
+uint16_t uavDbgAsyncTotal = 0;
+uint8_t  uavDbgParamState = 0;
+unsigned long lastParamDebugRxMs = 0;
+
+uint16_t lastParamBulkFirstIndex = 0xFFFF;
+uint16_t lastParamBulkLastIndex = 0xFFFF;
+uint8_t  lastParamBulkSeenCount = 0;
+uint16_t lastParamBulkSeenParamCount = 0;
 uint32_t invalidLengthDrop = 0;
 uint32_t invalidProtocolDrop = 0;
 uint32_t invalidCrcDrop = 0;
@@ -561,7 +517,7 @@ unsigned long lastCalCommandMs = 0;
 
 unsigned long lastParamRequestListForwardMs = 0;
 unsigned long lastParamExtRequestListForwardMs = 0;
-#define PARAM_REQUEST_LIST_DEDUP_MS 12000UL
+#define PARAM_REQUEST_LIST_DEDUP_MS 3000UL  // Allows MP retry spacing after a blocked or lost request.
 
 mavlink_message_t msg_gcs_in;
 mavlink_status_t status_gcs_in;
@@ -686,10 +642,6 @@ void canonicalizeMissionPlannerSource(uint8_t &sysid, uint8_t &compid) {
   compid = mpCanonicalCompId(compid);
 }
 #else
-void canonicalizeMissionPlannerSource(uint8_t &sysid, uint8_t &compid) {
-  if (sysid == 0) sysid = 1;
-  if (compid == 0) compid = MAV_COMP_ID_AUTOPILOT1;
-}
 #endif
 
 // Actual remote link metrics measured by the UAV: UAV calculates RSSI/SNR of GCS downlink
@@ -791,19 +743,11 @@ bool validatePacket(const uint8_t *buf, size_t len) {
 // loraNominalBitrateKbps defined in TelemetryProtoFix.h (duplicate removed)
 
 unsigned long rxTimeoutForSF(uint8_t sf) {
-  // Shorter polling windows keep Mission Planner command bytes from waiting
-  // too long in Serial while still covering the beacon ToA at each SF.
-  if (sf >= 12) return 1500UL;
-  if (sf == 11) return 1150UL;
-  if (sf == 10) return 850UL;
-  return 650UL;
+  return linkGcsRxTimeoutMs(sf);
 }
 
 unsigned long linkIdleScanAfterForSF(uint8_t sf) {
-  if (sf >= 12) return 8500UL;
-  if (sf == 11) return 6500UL;
-  if (sf == 10) return 5000UL;
-  return 3500UL;
+  return linkGcsIdleScanAfterMs(sf);
 }
 
 unsigned long mpLinkLossTimeoutForSF(uint8_t sf) {
@@ -943,12 +887,14 @@ void printMetricsHeader() {
     "profile,link_mode,packet_type,packet_bytes,payload_bytes,uav_high_queue,uav_low_queue,"
     "uav_high_drop,uav_low_drop,uav_param_drop,mp_mav_count,mp_mav_bytes,gcs_high_q,gcs_low_q,"
     "gcs_high_drop,gcs_low_drop,recovery_scan_count,sched_cancel_count,calib_dedup_drop,"
-    "cal_cmd_sent,mag_cal_progress_rx,mag_cal_report_rx,cal_command_ack_rx,cal_statustext_rx"
+    "cal_cmd_sent,mag_cal_progress_rx,mag_cal_report_rx,cal_command_ack_rx,cal_statustext_rx,"
+    "uav_dbg_async_start,uav_dbg_async_req_tx,uav_dbg_async_retry,"
+    "uav_dbg_param_bulk_queued,uav_dbg_param_bulk_tx,uav_dbg_param_bulk_ack,uav_dbg_param_bulk_fail,"
+    "uav_dbg_param_value_drop,uav_dbg_full_param_blocked,uav_dbg_async_index,uav_dbg_async_total,uav_dbg_param_state"
   );
 }
 
 void printMetrics(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, uint8_t profile, uint8_t mode, uint16_t latency_x100, uint16_t telemBytes, const TelemetryMeta &meta) {
-  (void)meta;
   unsigned long now = millis();
   uint16_t payloadBytes = telemetryPayloadBytesForType(pktType);
 
@@ -989,8 +935,8 @@ void printMetrics(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, 
   float edpMJ = (pdrForEdp > 0.0f) ? (etpMJ / pdrForEdp) : 0.0f;
 
   MetricsSerial.print(pktCounter); MetricsSerial.print(",");
-  MetricsSerial.print(radio.getRSSI(), 2); MetricsSerial.print(",");
-  MetricsSerial.print(radio.getSNR(), 2); MetricsSerial.print(",");
+  MetricsSerial.print(lastRssiRaw, 2); MetricsSerial.print(",");
+  MetricsSerial.print(lastSnr, 2); MetricsSerial.print(",");
   MetricsSerial.print(pdrCumPct, 2); MetricsSerial.print(",");
   MetricsSerial.print(plrCumPct, 2); MetricsSerial.print(",");
   MetricsSerial.print(pdrWinPct, 2); MetricsSerial.print(",");
@@ -1017,7 +963,7 @@ void printMetrics(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, 
   MetricsSerial.print(0); MetricsSerial.print(",");
   MetricsSerial.print(0); MetricsSerial.print(",");
   MetricsSerial.print(0); MetricsSerial.print(",");
-  MetricsSerial.print(0); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamValueDrop); MetricsSerial.print(",");
   MetricsSerial.print(mpMavCount); MetricsSerial.print(",");
   MetricsSerial.print(mpMavBytes); MetricsSerial.print(",");
   MetricsSerial.print(rawHighCount); MetricsSerial.print(",");
@@ -1031,24 +977,27 @@ void printMetrics(uint32_t pktCounter, uint8_t pktType, uint8_t sf, uint8_t tp, 
   MetricsSerial.print(magCalProgressRxCount); MetricsSerial.print(",");
   MetricsSerial.print(magCalReportRxCount); MetricsSerial.print(",");
   MetricsSerial.print(calCommandAckRxCount); MetricsSerial.print(",");
-  MetricsSerial.println(calStatustextRxCount);
+  MetricsSerial.print(calStatustextRxCount); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgAsyncStart); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgAsyncReqTx); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgAsyncRetry); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamBulkQueued); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamBulkTx); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamBulkAck); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamBulkFail); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgParamValueDrop); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgFullParamBlocked); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgAsyncIndex); MetricsSerial.print(",");
+  MetricsSerial.print(uavDbgAsyncTotal); MetricsSerial.print(",");
+  MetricsSerial.println(uavDbgParamState);
 }
 
 unsigned long paramSyncNoValueExitForSF(uint8_t sf) {
-  if (sf >= 12) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF12;
-  if (sf == 11) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF11;
-  if (sf == 10) return PARAM_SYNC_NO_VALUE_EXIT_MS_SF10;
-  if (sf == 9)  return 30000UL; // SF9 needs more time for slow responses
-  if (sf == 8)  return 25000UL;
-  return PARAM_SYNC_NO_VALUE_EXIT_MS_SF7_9; // 20000UL at SF7
+  return linkParamNoValueTimeoutMs(sf);
 }
 
 unsigned long paramSyncIdleExitForSF(uint8_t sf) {
-  if (sf >= 11) return 8000UL;
-  if (sf == 10) return 5000UL;
-  if (sf == 9)  return 15000UL;
-  if (sf == 8)  return 15000UL;
-  return PARAM_SYNC_IDLE_EXIT_MS;  // 15000UL at SF7-9
+  return linkParamIdleTimeoutMs(sf);
 }
 
 void flushParamSyncCommandQueuesForRecovery() {
@@ -1278,50 +1227,17 @@ void syncModeFromUAV(uint8_t uavMode) {
 }
 
 void copyParamId(char *dest, const char *src) { memcpy(dest, src, 16); dest[16] = 0; }
-bool paramIdStartsWith(const char *id, const char *prefix) { return strncmp(id, prefix, strlen(prefix)) == 0; }
-bool paramIdEquals(const char *id, const char *name) { return strncmp(id, name, 16) == 0; }
 
 bool isInteractiveSetupParamId(const char *id) {
-  if (id == nullptr || id[0] == 0) return false;
-  if (paramIdStartsWith(id, "COMPASS_")) return true;
-  if (paramIdStartsWith(id, "INS_")) return true;
-  if (paramIdStartsWith(id, "AHRS_")) return true;
-  if (paramIdStartsWith(id, "GPS_")) return true;
-  if (paramIdStartsWith(id, "GPS2_")) return true;
-  if (paramIdStartsWith(id, "SERIAL")) return true;
-  if (paramIdStartsWith(id, "CAN_")) return true;
-  if (paramIdStartsWith(id, "BRD_")) return true;
-  if (paramIdStartsWith(id, "EK2_")) return true;
-  if (paramIdStartsWith(id, "EK3_")) return true;
-  if (paramIdStartsWith(id, "ARMING_")) return true;
-  if (paramIdStartsWith(id, "RC")) return true;
-  if (paramIdStartsWith(id, "FS_")) return true;
-  if (paramIdStartsWith(id, "SERVO")) return true;
-  if (paramIdStartsWith(id, "MOT_")) return true;
-  if (paramIdStartsWith(id, "ESC_")) return true;
-  if (paramIdStartsWith(id, "FLTMODE")) return true;
-  if (paramIdEquals(id, "SIMPLE")) return true;
-  if (paramIdEquals(id, "SUPER_SIMPLE")) return true;
-  if (paramIdEquals(id, "MODE_CH")) return true;
-  if (paramIdStartsWith(id, "BATT")) return true;
-  if (paramIdStartsWith(id, "FENCE_")) return true;
-  if (paramIdStartsWith(id, "ATC_")) return true;
-  if (paramIdStartsWith(id, "PSC_")) return true;
-  if (paramIdStartsWith(id, "PILOT_")) return true;
-  if (paramIdStartsWith(id, "WPNAV_")) return true;
-  if (paramIdStartsWith(id, "ANGLE_")) return true;
-  return false;
+  return bridgeIsInteractiveSetupParamId(id);
 }
 
 bool isCalibrationCommand(uint16_t command) {
-  return (command == CMD_PREFLIGHT_CALIBRATION || command == CMD_DO_START_MAG_CAL ||
-          command == CMD_DO_ACCEPT_MAG_CAL || command == CMD_DO_CANCEL_MAG_CAL ||
-          command == CMD_ACCELCAL_VEHICLE_POS);
+  return bridgeIsCalibrationCommand(command);
 }
 
 bool isSetupConfigCommand(uint16_t command) {
-  return isCalibrationCommand(command) || command == CMD_PREFLIGHT_STORAGE ||
-         command == CMD_PREFLIGHT_REBOOT_SHUTDOWN || command == CMD_START_RX_PAIR;
+  return bridgeIsSetupConfigCommand(command);
 }
 
 bool isCriticalCommandLong(uint16_t command) {
@@ -1329,12 +1245,15 @@ bool isCriticalCommandLong(uint16_t command) {
 }
 
 bool isFlightActionCommandId(uint16_t command) {
-  return command == CMD_COMPONENT_ARM_DISARM || command == CMD_DO_SET_MODE ||
-         command == MAV_CMD_NAV_WAYPOINT || command == MAV_CMD_NAV_LOITER_UNLIM ||
-         command == MAV_CMD_NAV_LOITER_TURNS || command == MAV_CMD_NAV_LOITER_TIME ||
-         command == MAV_CMD_NAV_RETURN_TO_LAUNCH || command == MAV_CMD_NAV_LAND ||
-         command == MAV_CMD_NAV_TAKEOFF || command == MAV_CMD_DO_REPOSITION ||
-         command == MAV_CMD_MISSION_START || command == MAV_CMD_DO_SET_HOME;
+  /*
+   * Transport priority classifier, not only "vehicle movement" classifier.
+   *
+   * Mission Planner waits synchronously for COMMAND_ACK on these commands. If they
+   * sit behind parameter bulk traffic, MP reports "failed to communicate with
+   * autopilot" even though the RF link is alive. Motor Test (MAV_CMD_DO_MOTOR_TEST)
+   * belongs here because Optional Hardware -> Motor Test is a blocking UI command.
+   */
+  return bridgeIsFlightActionCommand(command);
 }
 
 bool isFlightActionGCSMessage(const mavlink_message_t &msg) {
@@ -1350,6 +1269,45 @@ bool isFlightActionGCSMessage(const mavlink_message_t &msg) {
   if (msg.msgid == MAVLINK_MSG_ID_COMMAND_INT) {
     mavlink_command_int_t cmd; mavlink_msg_command_int_decode(&msg, &cmd);
     return isFlightActionCommandId((uint16_t)cmd.command);
+  }
+#endif
+  return false;
+}
+
+
+bool isControlPriorityGCSMessage(const mavlink_message_t &msg) {
+  /*
+   * User-blocking uplink classifier.
+   *
+   * Full param sync is bulk/throughput traffic. PARAM_SET, motor-test, setup,
+   * manual-control, mode changes, and non-background COMMAND_LONG/INT are
+   * interactive control traffic. They must be delivered in the next available
+   * downlink slot, even if a PARAM_BULK transfer is in progress.
+   */
+  if (msg.msgid == MAVLINK_MSG_ID_PARAM_SET) return true;
+#ifdef MAVLINK_MSG_ID_PARAM_EXT_SET
+  if (msg.msgid == MAVLINK_MSG_ID_PARAM_EXT_SET) return true;
+#endif
+  if (msg.msgid == MAVLINK_MSG_ID_SET_MODE ||
+      msg.msgid == MAVLINK_MSG_ID_MISSION_SET_CURRENT ||
+      msg.msgid == MAVLINK_MSG_ID_MANUAL_CONTROL ||
+      msg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE) {
+    return true;
+  }
+  if (msg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
+    mavlink_command_long_t cmd;
+    mavlink_msg_command_long_decode(&msg, &cmd);
+    uint16_t command = (uint16_t)cmd.command;
+    if (isBackgroundOrInternalCommandAck(command)) return false;
+    return true;
+  }
+#ifdef MAVLINK_MSG_ID_COMMAND_INT
+  if (msg.msgid == MAVLINK_MSG_ID_COMMAND_INT) {
+    mavlink_command_int_t cmd;
+    mavlink_msg_command_int_decode(&msg, &cmd);
+    uint16_t command = (uint16_t)cmd.command;
+    if (isBackgroundOrInternalCommandAck(command)) return false;
+    return true;
   }
 #endif
   return false;
@@ -1527,10 +1485,10 @@ void popNextRawPacket(bool fromHighQueue) {
 
 bool fullParamSyncAllowedOnActiveSF() {
 #if BLOCK_FULL_PARAM_SYNC_HIGH_SF
-  // If the LoRa link has not locked yet, do not allow Mission Planner to queue a full
-  // parameter download on the default scan SF and accidentally release it later at SF10-SF12.
-  if (!phyLocked) return false;
-  return activeSF <= FULL_PARAM_SYNC_MAX_SF;
+  // Param sync is allowed only after a real beacon lock at SF7-SF9.
+  // Pre-lock requests are blocked so stale Mission Planner get-param traffic
+  // cannot be queued and later transmitted after locking to SF10-SF12.
+  return phyLocked && linkSfAllowsParamGet((uint8_t)activeSF);
 #else
   return true;
 #endif
@@ -1540,7 +1498,7 @@ void notifyHighSfParamBlockedIfNeeded() {
   unsigned long now = millis();
   if (now - lastHighSfParamNoticeMs < HIGH_SF_PARAM_NOTICE_INTERVAL_MS) return;
   lastHighSfParamNoticeMs = now;
-  sendBridgeEvent(MAV_SEVERITY_WARNING, "Param sync blocked: use SF7-SF9 to sync", HIGH_SF_PARAM_NOTICE_INTERVAL_MS);
+  sendBridgeEvent(MAV_SEVERITY_WARNING, "Param get blocked: use SF7-SF9", HIGH_SF_PARAM_NOTICE_INTERVAL_MS);
 }
 
 bool shouldForwardParamRequestList() {
@@ -1551,9 +1509,19 @@ bool shouldForwardParamRequestList() {
     notifyHighSfParamBlockedIfNeeded();
     return false;
   }
-  if (paramSyncActive && lastParamRequestListForwardMs > 0 && (now - lastParamRequestListForwardMs) < PARAM_REQUEST_LIST_DEDUP_MS) {
-    return false;
+
+  /*
+   * Duplicate full-list protection:
+   * Once PARAM_VALUE has started flowing, another PARAM_REQUEST_LIST from MP is
+   * a retry/keepalive, not a new transaction. Forwarding it would ask the UAV
+   * proxy to restart and can erase progress. Before the first PARAM_VALUE, allow
+   * a slow retry so a lost GCS->UAV request can still recover.
+   */
+  if (paramSyncActive) {
+    if (lastParamValueMs > 0) return false;
+    if (lastParamRequestListForwardMs > 0 && (now - lastParamRequestListForwardMs) < 5000UL) return false;
   }
+
   lastParamRequestListForwardMs = now;
   return true;
 }
@@ -1566,8 +1534,9 @@ bool shouldForwardParamExtRequestList() {
     notifyHighSfParamBlockedIfNeeded();
     return false;
   }
-  if (paramSyncActive && lastParamExtRequestListForwardMs > 0 && (now - lastParamExtRequestListForwardMs) < PARAM_REQUEST_LIST_DEDUP_MS) {
-    return false;
+  if (paramSyncActive) {
+    if (lastParamValueMs > 0) return false;
+    if (lastParamExtRequestListForwardMs > 0 && (now - lastParamExtRequestListForwardMs) < 5000UL) return false;
   }
   lastParamExtRequestListForwardMs = now;
   return true;
@@ -1576,7 +1545,7 @@ bool shouldForwardParamExtRequestList() {
 
 bool highSfParamTrafficBlocked() {
 #if BLOCK_PARAM_READ_HIGH_SF
-  return (!phyLocked || activeSF > FULL_PARAM_SYNC_MAX_SF);
+  return !phyLocked || !linkSfAllowsParamGet((uint8_t)activeSF);
 #else
   return false;
 #endif
@@ -1587,8 +1556,6 @@ bool shouldForwardParamRequestReadHighSf(const mavlink_message_t &msg) {
   mavlink_param_request_read_t pr;
   mavlink_msg_param_request_read_decode(&msg, &pr);
   char id[17]; copyParamId(id, pr.param_id);
-  // Keep a small escape hatch for interactive setup pages, but block generic auto-sync reads.
-  if (isInteractiveSetupParamId(id)) return true;
   paramReadBlockedHighSfCount++;
   abortParamSyncRecovery("block_param_read_high_sf");
   notifyHighSfParamBlockedIfNeeded();
@@ -1601,7 +1568,6 @@ bool shouldForwardParamExtRequestReadHighSf(const mavlink_message_t &msg) {
   mavlink_param_ext_request_read_t pr;
   mavlink_msg_param_ext_request_read_decode(&msg, &pr);
   char id[17]; copyParamId(id, pr.param_id);
-  if (isInteractiveSetupParamId(id)) return true;
   paramReadBlockedHighSfCount++;
   abortParamSyncRecovery("block_param_ext_read_high_sf");
   notifyHighSfParamBlockedIfNeeded();
@@ -1610,7 +1576,7 @@ bool shouldForwardParamExtRequestReadHighSf(const mavlink_message_t &msg) {
 #endif
 
 bool isHighSfSurvivalMode() {
-  return (!phyLocked || activeSF > FULL_PARAM_SYNC_MAX_SF);
+  return !phyLocked || !linkSfAllowsParamGet((uint8_t)activeSF);
 }
 
 bool shouldBlockMissionPlannerMessageAtCurrentSF(const mavlink_message_t &msg) {
@@ -1686,10 +1652,22 @@ bool shouldForwardGCSMessage(const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_PARAM_REQUEST_READ:
       paramRequestCount++;
       if (!shouldForwardParamRequestReadHighSf(msg)) return false;
+      if (paramSyncActive && !isSetupConfigMavlinkMessage(msg)) {
+        // During full async sync, generic MP gap reads are handled by the UAV
+        // proxy. Forwarding them as raw high-priority packets creates cursor
+        // races and raises paramValueDrop. PARAM_SET remains allowed.
+        return false;
+      }
       if (isSetupConfigMavlinkMessage(msg)) startCalibrationConfigMode();
-      if (fullParamSyncAllowedOnActiveSF()) startParamSync();
+      else if (fullParamSyncAllowedOnActiveSF()) startParamSync();
       return true;
     case MAVLINK_MSG_ID_PARAM_SET:
+      /*
+       * PARAM_SET is a user-blocking write path. Do not let it wait behind an
+       * ongoing full parameter download. Abort/pause bulk sync locally; the UAV
+       * will do the same when it receives the write command.
+       */
+      if (paramSyncActive) abortParamSyncRecovery("param_set_priority");
       if (isSetupConfigMavlinkMessage(msg)) startCalibrationConfigMode();
       return true;
 #ifdef MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST
@@ -1702,12 +1680,14 @@ bool shouldForwardGCSMessage(const mavlink_message_t &msg) {
     case MAVLINK_MSG_ID_PARAM_EXT_REQUEST_READ:
       paramRequestCount++;
       if (!shouldForwardParamExtRequestReadHighSf(msg)) return false;
+      if (paramSyncActive && !isSetupConfigMavlinkMessage(msg)) return false;
       if (isSetupConfigMavlinkMessage(msg)) startCalibrationConfigMode();
-      if (fullParamSyncAllowedOnActiveSF()) startParamSync();
+      else if (fullParamSyncAllowedOnActiveSF()) startParamSync();
       return true;
 #endif
 #ifdef MAVLINK_MSG_ID_PARAM_EXT_SET
     case MAVLINK_MSG_ID_PARAM_EXT_SET:
+      if (paramSyncActive) abortParamSyncRecovery("param_ext_set_priority");
       if (isSetupConfigMavlinkMessage(msg)) startCalibrationConfigMode();
       return true;
 #endif
@@ -1893,20 +1873,31 @@ void enqueueGCSMavlinkMessage(const mavlink_message_t &msg) {
   uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
   if (len == 0 || len > RAW_MAVLINK_MAX) { commandDrop++; return; }
   bool flightAction = isFlightActionGCSMessage(msg);
+  bool controlPriority = isControlPriorityGCSMessage(msg);
   uint16_t commandIdForAck = extractCommandIdFromMissionPlannerMessage(msg);
   bool isArmTxnMsg = false;
   bool armTxnArm = false;
   bool armTxnForce = false;
   isArmTxnMsg = decodeArmCommandFromMissionPlannerMessage(msg, armTxnArm, armTxnForce);
-  if (flightAction) {
+
+  if (controlPriority) {
+    /*
+     * Interactive uplink preemption:
+     * PARAM_SET and motor-test style commands are not background traffic. They
+     * must not sit behind full-param-sync queues. This mode flushes stale
+     * downlink queues before the new command is enqueued, so the command becomes
+     * the next packet sent on the next UAV RX window.
+     */
     beginFlightCommandPriorityMode();
     if (commandIdForAck == MAV_CMD_COMPONENT_ARM_DISARM || commandIdForAck == CMD_COMPONENT_ARM_DISARM) {
       beginArmFeedbackMode();
       sendBridgeEvent(MAV_SEVERITY_NOTICE, "ARM sent; FC may reject/disarm on battery failsafe", 3000UL);
     }
   }
-  if (!isBackgroundOrInternalCommandAck(commandIdForAck)) rememberMissionPlannerCommandForAck(commandIdForAck, flightAction);
-  bool high = isHighPriorityGCSMessage(msg) || flightAction;
+  if (commandIdForAck != 0 && !isBackgroundOrInternalCommandAck(commandIdForAck)) {
+    rememberMissionPlannerCommandForAck(commandIdForAck, controlPriority || flightAction);
+  }
+  bool high = isHighPriorityGCSMessage(msg) || flightAction || controlPriority;
   uint8_t repeat = repeatCountForGCSMessage(msg);
   if (repeat < 1) repeat = 1;
   if (flightAction) repeat = 1;
@@ -1977,9 +1968,6 @@ bool isRawTelemetryDuplicateInNormalMode(uint32_t msgid) {
 #endif
 #ifdef MAVLINK_MSG_ID_VFR_HUD
     case MAVLINK_MSG_ID_VFR_HUD:
-#endif
-#ifdef MAVLINK_MSG_ID_EKF_STATUS_REPORT
-    case MAVLINK_MSG_ID_EKF_STATUS_REPORT:
 #endif
       return true;
     default:
@@ -2583,6 +2571,13 @@ void reencodeParsedMessageToMissionPlanner(const mavlink_message_t &inMsg) {
       mavlink_msg_sys_status_encode(sysid, compid, &msg_out, &p);
       sendMavlinkMessageToMissionPlanner(msg_out); break;
     }
+#ifdef MAVLINK_MSG_ID_BATTERY_STATUS
+    case MAVLINK_MSG_ID_BATTERY_STATUS: {
+      mavlink_battery_status_t p; mavlink_msg_battery_status_decode(&inMsg, &p);
+      mavlink_msg_battery_status_encode(sysid, compid, &msg_out, &p);
+      sendMavlinkMessageToMissionPlanner(msg_out); break;
+    }
+#endif
     case MAVLINK_MSG_ID_COMMAND_ACK: {
       mavlink_command_ack_t p; mavlink_msg_command_ack_decode(&inMsg, &p);
       if (p.command == MAV_CMD_COMPONENT_ARM_DISARM || p.command == CMD_COMPONENT_ARM_DISARM) {
@@ -2672,6 +2667,24 @@ void reencodeParsedMessageToMissionPlanner(const mavlink_message_t &inMsg) {
     case MAVLINK_MSG_ID_MAG_CAL_REPORT: {
       mavlink_mag_cal_report_t p; mavlink_msg_mag_cal_report_decode(&inMsg, &p);
       mavlink_msg_mag_cal_report_encode(sysid, compid, &msg_out, &p);
+      sendMavlinkMessageToMissionPlanner(msg_out); break;
+    }
+#endif
+#ifdef MAVLINK_MSG_ID_EKF_STATUS_REPORT
+    case MAVLINK_MSG_ID_EKF_STATUS_REPORT: {
+      // Forward full EKF_STATUS_REPORT when UAV sends the raw message.
+      // This preserves variance fields that cannot fit in the compact beacon.
+      mavlink_ekf_status_report_t p; mavlink_msg_ekf_status_report_decode(&inMsg, &p);
+      mavlink_msg_ekf_status_report_encode(sysid, compid, &msg_out, &p);
+      sendMavlinkMessageToMissionPlanner(msg_out); break;
+    }
+#endif
+#ifdef MAVLINK_MSG_ID_VIBRATION
+    case MAVLINK_MSG_ID_VIBRATION: {
+      // Raw VIBRATION is forwarded so Mission Planner can show real vibration
+      // values/clipping; EKF status flags alone are not a vibration monitor.
+      mavlink_vibration_t p; mavlink_msg_vibration_decode(&inMsg, &p);
+      mavlink_msg_vibration_encode(sysid, compid, &msg_out, &p);
       sendMavlinkMessageToMissionPlanner(msg_out); break;
     }
 #endif
@@ -2894,6 +2907,38 @@ void parseAndReencodeRawToMissionPlanner(const MavlinkRawPacket &raw) {
   }
 }
 
+
+void rememberParamDebugPacket(const ParamDebugPacket &pkt) {
+  uavDbgAsyncStart = pkt.dbg_async_start;
+  uavDbgAsyncReqTx = pkt.dbg_async_req_tx;
+  uavDbgAsyncRetry = pkt.dbg_async_retry;
+  uavDbgParamBulkQueued = pkt.dbg_param_bulk_queued;
+  uavDbgParamBulkTx = pkt.dbg_param_bulk_tx;
+  uavDbgParamBulkAck = pkt.dbg_param_bulk_ack;
+  uavDbgParamBulkFail = pkt.dbg_param_bulk_fail;
+  uavDbgParamValueDrop = pkt.dbg_param_value_drop;
+  uavDbgFullParamBlocked = pkt.dbg_full_param_blocked;
+  uavDbgAsyncIndex = pkt.dbg_async_index;
+  uavDbgAsyncTotal = pkt.dbg_async_total;
+  uavDbgParamState = pkt.dbg_param_state;
+  lastParamDebugRxMs = millis();
+}
+
+bool isDuplicateParamBulkForMissionPlanner(const ParamBulkPacket &pkt) {
+  if (pkt.count == 0) return true;
+  const CompactParamValue &first = pkt.rec[0];
+  const CompactParamValue &last = pkt.rec[pkt.count - 1];
+  bool duplicate = (lastParamBulkSeenCount == pkt.count &&
+                    lastParamBulkFirstIndex == first.param_index &&
+                    lastParamBulkLastIndex == last.param_index &&
+                    lastParamBulkSeenParamCount == last.param_count);
+  lastParamBulkSeenCount = pkt.count;
+  lastParamBulkFirstIndex = first.param_index;
+  lastParamBulkLastIndex = last.param_index;
+  lastParamBulkSeenParamCount = last.param_count;
+  return duplicate;
+}
+
 void parseAndReencodeParamBulkToMissionPlanner(const ParamBulkPacket &pkt) {
   if (pkt.count == 0 || pkt.count > PARAM_BULK_MAX_RECORDS) return;
   uint8_t sysid = pkt.sysid == 0 ? 1 : pkt.sysid;
@@ -3015,6 +3060,143 @@ void serviceProxyCommandAckBurst() {
   }
 }
 
+
+
+bool rawPacketIsImmediateControl(const MavlinkRawPacket &raw) {
+  /*
+   * Only packets that Mission Planner is synchronously waiting on may preempt a
+   * PARAM_BULK ACK slot. Generic PARAM_REQUEST_READ/list traffic is intentionally
+   * excluded to avoid reintroducing async cursor races.
+   */
+  if (raw.len == 0 || raw.len > RAW_MAVLINK_MAX) return false;
+
+  mavlink_message_t parsedMsg;
+  mavlink_status_t parsedStatus;
+  memset(&parsedMsg, 0, sizeof(parsedMsg));
+  memset(&parsedStatus, 0, sizeof(parsedStatus));
+
+  for (uint8_t i = 0; i < raw.len; i++) {
+    if (!mavlink_parse_char(MAVLINK_COMM_2, raw.payload[i], &parsedMsg, &parsedStatus)) continue;
+
+    if (parsedMsg.msgid == MAVLINK_MSG_ID_PARAM_SET) return true;
+#ifdef MAVLINK_MSG_ID_PARAM_EXT_SET
+    if (parsedMsg.msgid == MAVLINK_MSG_ID_PARAM_EXT_SET) return true;
+#endif
+    if (parsedMsg.msgid == MAVLINK_MSG_ID_SET_MODE ||
+        parsedMsg.msgid == MAVLINK_MSG_ID_MISSION_SET_CURRENT ||
+        parsedMsg.msgid == MAVLINK_MSG_ID_MANUAL_CONTROL ||
+        parsedMsg.msgid == MAVLINK_MSG_ID_RC_CHANNELS_OVERRIDE) {
+      return true;
+    }
+    if (parsedMsg.msgid == MAVLINK_MSG_ID_COMMAND_LONG) {
+      mavlink_command_long_t cmd;
+      mavlink_msg_command_long_decode(&parsedMsg, &cmd);
+      return !isBackgroundOrInternalCommandAck((uint16_t)cmd.command);
+    }
+#ifdef MAVLINK_MSG_ID_COMMAND_INT
+    if (parsedMsg.msgid == MAVLINK_MSG_ID_COMMAND_INT) {
+      mavlink_command_int_t cmd;
+      mavlink_msg_command_int_decode(&parsedMsg, &cmd);
+      return !isBackgroundOrInternalCommandAck((uint16_t)cmd.command);
+    }
+#endif
+  }
+  return false;
+}
+
+bool sendImmediateCriticalDownlinkOrAck(uint32_t ackCounter) {
+  /*
+   * PARAM_BULK ACK slot policy:
+   *
+   * 1. If Mission Planner has an interactive command waiting, use this RX window
+   *    to deliver that command. The UAV treats PKT_MAVLINK_RAW/PKT_CMD_COMPACT
+   *    as a valid response to the bulk packet, processes the command, and returns
+   *    true to its waitResponseFromGCS().
+   * 2. If no interactive command exists, send a pure LINK_ACK.
+   *
+   * This fixes the old failure mode where PARAM_SET / Motor Test had to wait for
+   * a telemetry beacon while the UAV was busy sending PARAM_BULK packets.
+   */
+  CompactCommandQueueItem compact;
+  MavlinkRawPacket raw;
+  bool fromHighQueue = false;
+
+  radio.standby();
+  radio.setBandwidth(LORA_BW_KHZ);
+  radio.setSpreadingFactor(activeSF);
+  radio.setOutputPower(activeTP);
+  delay(PARAM_BULK_ACK_GUARD_MS);
+
+  if (peekCompactCommandPacket(compact)) {
+    int16_t state = radio.transmit(compact.payload, compact.len);
+    radio.standby();
+    if (state == RADIOLIB_ERR_NONE) {
+      bool arm = false, force = false;
+      bool isArmCmd = decodeArmCommandFromCompactItem(compact, arm, force);
+      if (isArmCmd) markArmCommandTransactionTx(arm, force);
+      popCompactCommandPacket();
+      radioBytesTx += compact.len;
+      compactCmdTxCount++;
+      return true;
+    }
+    return false;
+  }
+
+  if (peekNextRawPacket(raw, fromHighQueue) && fromHighQueue && rawPacketIsImmediateControl(raw)) {
+    uint16_t packetLen = RAW_PKT_HEADER_LEN + raw.len;
+    finalizePacketCrc(&raw, packetLen);
+    int16_t state = radio.transmit((uint8_t *)&raw, packetLen);
+    radio.standby();
+    if (state == RADIOLIB_ERR_NONE) {
+      bool arm = false, force = false;
+      bool isArmCmd = decodeArmCommandFromRawPacket(raw, arm, force);
+      if (isArmCmd) markArmCommandTransactionTx(arm, force);
+      popNextRawPacket(fromHighQueue);
+      radioBytesTx += packetLen;
+      return true;
+    }
+    return false;
+  }
+
+  LinkAckPacket ack = {};
+  initHeader(ack.hdr, PKT_LINK_ACK);
+  ack.counter = ackCounter;
+  finalizePacketCrc(&ack, sizeof(ack));
+  int16_t state = radio.transmit((uint8_t *)&ack, sizeof(ack));
+  radio.standby();
+  if (state == RADIOLIB_ERR_NONE) {
+    radioBytesTx += sizeof(ack);
+    return true;
+  }
+  return false;
+}
+
+// Send a pure LINK_ACK immediately without piggybacking queued commands.
+// PARAM_BULK uses this path because the UAV is waiting in a short RX window;
+// sending a pending MAVLink command instead of ACK turns a good bulk packet into
+// a false retransmit/fail. Command piggybacking is still used for telemetry/raw
+// packets through sendAckOrPendingCommand().
+bool sendImmediateLinkAck(uint32_t ackCounter) {
+  radio.standby();
+  radio.setBandwidth(LORA_BW_KHZ);
+  radio.setSpreadingFactor(activeSF);
+  radio.setOutputPower(activeTP);
+  delay(PARAM_BULK_ACK_GUARD_MS);
+
+  LinkAckPacket ack = {};
+  initHeader(ack.hdr, PKT_LINK_ACK);
+  ack.counter = ackCounter;
+  finalizePacketCrc(&ack, sizeof(ack));
+
+  int16_t state = radio.transmit((uint8_t *)&ack, sizeof(ack));
+  radio.standby();
+  if (state == RADIOLIB_ERR_NONE) {
+    radioBytesTx += sizeof(ack);
+    return true;
+  }
+  return false;
+}
+
 bool sendAckOrPendingCommand(uint32_t ackCounter) {
   CompactCommandQueueItem compact;
   MavlinkRawPacket raw; bool fromHighQueue = false;
@@ -3112,11 +3294,11 @@ void updateRecoveryScanning() {
   applyRadioSettings(activeSF);
 #else
   phyLocked = false;
-  // UAV-master PHY: scans spreading factors SF7 to SF12 sequentially when not locked
-  activeSF = scanSF;
+  // UAV-master PHY: weighted scan. SF7/SF8/SF9 are operational modes and are
+  // visited frequently; SF10-SF12 are recovery modes and are sampled rarely.
+  activeSF = linkWeightedScanSf(scanProfileStep++);
+  scanSF = activeSF;
   applyRadioSettings(activeSF);
-  scanSF++;
-  if (scanSF > SF_MAX) scanSF = SF_MIN;
 #endif
   recoveryStep++; recoveryScanCount++; lastScanMs = now;
 }
@@ -3141,8 +3323,9 @@ void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t s
   scanSF = sf;
   phyLocked = true;
   lastProfile = profile; lastPktType = pktType; recoveryStep = 0; syncModeFromUAV(mode);
-  lastRssi = radio.getRSSI();
-  lastSnr = radio.getSNR();
+  // RSSI/SNR sudah diambil oleh captureLoRaRxMetrics()
+// tepat setelah paket valid diterima di loop().
+// Jangan ambil ulang di sini agar tidak membaca nilai stale setelah perubahan mode radio.
   latestUavCntAck = meta.cnt_ack;
   latestUavSuccessStreak = meta.success_streak;
   latestUavFailStreak = meta.fail_streak;
@@ -3157,7 +3340,11 @@ void handleTelemetryPacketCommon(uint32_t pktCounter, uint8_t pktType, uint8_t s
   // on non-ACK slots. If the GCS transmits on a non-ACK slot, radio.transmit() still succeeds
   // locally, the queue is popped, but the UAV will not receive the command.
   bool mayUseThisSlot = ackSlot;
-  if (sf <= 9 && pendingDownlink) mayUseThisSlot = true;
+  // During full parameter sync the UAV sends telemetry fire-and-forget and is
+  // not guaranteed to be in RX after a beacon. Interactive commands are carried
+  // in the PARAM_BULK ACK slot instead, preventing silent command loss.
+  if (mode == LINK_MODE_PARAM_SYNC) mayUseThisSlot = false;
+  else if (sf <= 9 && pendingDownlink) mayUseThisSlot = true;
 
   if (mayUseThisSlot) {
     if (pendingDownlink) flightCommandTxSlotCount++;
@@ -3184,6 +3371,7 @@ void hardRecoverLoRaIfNoPackets() {
   phyLocked = false;
   activeSF = SF_MIN;
   scanSF = SF_MIN;
+  scanProfileStep = 0;
   scheduledConfig = false;
   radio.standby();
   hardResetLoRa();
@@ -3206,11 +3394,13 @@ void setup() {
 #if PHY_TEST_LOCK_INITIAL_SF
   activeSF = DEFAULT_SF;
   scanSF = DEFAULT_SF;
+  scanProfileStep = 0;
 #else
   // UAV-master PHY: GCS does not need to be re-uploaded when the UAV's SF changes.
   // GCS starts scanning from SF_MIN and locks upon receiving a valid beacon from the UAV.
   activeSF = SF_MIN;
   scanSF = SF_MIN;
+  scanProfileStep = 0;
 #endif
   MetricsSerial.print("[BOOT GCS] DEFAULT_SF=");
   MetricsSerial.print(DEFAULT_SF);
@@ -3256,7 +3446,11 @@ void loop() {
   if (rxLen == 0 || rxLen > LORA_RX_MAX) return;
   if (!validatePacket(rxBuf, rxLen)) return;
 
-  PacketHeader *hdr = (PacketHeader *)rxBuf;
+  // Ambil RSSI/SNR segera setelah paket valid diterima,
+  // sebelum radio dipakai untuk ACK / TX / konfigurasi lain.
+  captureLoRaRxMetrics();
+
+PacketHeader *hdr = (PacketHeader *)rxBuf;
   radioBytesRx += rxLen; recoveryStep = 0;
   readGCSMavlinkCommands();
 
@@ -3286,13 +3480,27 @@ void loop() {
     return;
   }
 
+  if (hdr->type == PKT_PARAM_DEBUG) {
+    if (rxLen != sizeof(ParamDebugPacket)) return;
+    ParamDebugPacket pkt; memcpy(&pkt, rxBuf, sizeof(pkt));
+    rememberParamDebugPacket(pkt);
+    return;
+  }
+
   if (hdr->type == PKT_PARAM_BULK) {
     if (rxLen < PARAM_BULK_BASE_LEN || rxLen > sizeof(ParamBulkPacket)) return;
     ParamBulkPacket pkt; memset(&pkt, 0, sizeof(pkt)); memcpy(&pkt, rxBuf, rxLen);
     if (pkt.count == 0 || pkt.count > PARAM_BULK_MAX_RECORDS) return;
     if (rxLen != (size_t)PARAM_BULK_LEN(pkt.count)) return;
     lastPacketMs = millis();
-    sendAckOrPendingCommand(0);
+    // ACK first and ACK-only. This is the most important reliability fix in
+    // this build: queued GCS->UAV commands must not steal the short ACK slot
+    // while UAV is waiting for PARAM_BULK confirmation.
+    sendImmediateCriticalDownlinkOrAck(0);
+    if (isDuplicateParamBulkForMissionPlanner(pkt)) {
+      paramBulkDuplicateDrop++;
+      return;
+    }
     parseAndReencodeParamBulkToMissionPlanner(pkt);
     return;
   }

@@ -2,7 +2,8 @@
 #define GC_CALIB_HELPERS_H
 
 #include <Arduino.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
+#include "src/common/LinkProfile.h"
 
 // Extern references to variables in GCS sketch
 extern bool calConfigActive;
@@ -17,16 +18,6 @@ extern bool paramSyncActive;
 #ifndef PARAM_MODE_HOLD_MS
 #define PARAM_MODE_HOLD_MS 8000UL
 #endif
-#ifndef LINK_MODE_CALIBRATION
-#define LINK_MODE_CALIBRATION 2
-#endif
-#ifndef LINK_MODE_PARAM_SYNC
-#define LINK_MODE_PARAM_SYNC 1
-#endif
-#ifndef LINK_MODE_NORMAL
-#define LINK_MODE_NORMAL 0
-#endif
-
 inline bool calibrationConfigModeActive() {
   return calConfigActive && millis() < calConfigUntilMs;
 }

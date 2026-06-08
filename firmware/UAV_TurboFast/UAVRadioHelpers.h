@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
 
 // Extern references to variables in main UAV sketch
 extern SX1278 radio;
@@ -21,7 +21,7 @@ extern uint16_t lowCount;
 #define LORA_BW_KHZ 250.0f
 #endif
 #ifndef LORA_CR_DEN
-#define LORA_CR_DEN 8
+#define LORA_CR_DEN 5
 #endif
 #ifndef FREQ_MHZ
 #define FREQ_MHZ 433.0f

@@ -2,7 +2,8 @@
 #define UAV_PARAM_QUEUE_H
 
 #include <Arduino.h>
-#include "TelemetryProtoFix.h"
+#include "src/common/TelemetryProtoFix.h"
+#include "src/common/LinkProfile.h"
 #include <MAVLink_ardupilotmega.h>
 
 // Extern definitions of GCS parameter sync globals
@@ -18,7 +19,6 @@ extern uint32_t paramBulkQueueDrop;
 extern uint32_t paramValueDrop;
 extern uint32_t paramBulkQueuedCount;
 extern int currentSF;
-extern unsigned long lastParamEnqueueMs;
 
 // Functions for parameter bulk transfer
 void flushLowQueue();
@@ -58,10 +58,7 @@ inline bool startNewParamBulkPacket(uint8_t sysid, uint8_t compid) {
 }
 
 inline uint8_t paramBulkRecordsLimitForCurrentSF() {
-  if (currentSF == 8) return 4;
-  if (currentSF == 9) return 3;
-  if (currentSF >= 10) return 0;
-  return PARAM_BULK_MAX_RECORDS;
+  return linkParamBulkRecords((uint8_t)currentSF, PARAM_BULK_MAX_RECORDS);
 }
 
 inline bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
@@ -93,7 +90,6 @@ inline bool enqueueParamValueBulkForGCS(const mavlink_message_t &msg) {
   pkt->count++;
   finalizePacketCrc(pkt, PARAM_BULK_LEN(pkt->count));
   paramBulkQueuedCount++;
-  lastParamEnqueueMs = millis();
   return true;
 }
 
