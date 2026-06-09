@@ -13,6 +13,7 @@
 
 ## Fixed In This Cleanup
 
+- Fixed GCS SF scan loop after short locked-link gaps by delaying locked recovery scanning until the Mission Planner link-loss window has actually elapsed.
 - Fixed GCS compile failure caused by a `MAVLINK_COMM_2` macro fallback colliding with MAVLink's channel enum.
 - Removed all `clean_` filenames.
 - Split GCS and UAV sketches into separate folders so both `setup()` / `loop()` definitions are not in one Arduino sketch folder.
@@ -44,3 +45,4 @@
 - Compass calibration progress continuity: `MAG_CAL_PROGRESS` rate, `MAG_CAL_REPORT`, and final reboot prompt in Mission Planner.
 - Accel calibration continuity: Mission Planner prompt sequence, real `COMMAND_ACK`, relevant `STATUSTEXT`, and absence of duplicate step advancement.
 - Battery: direct USB `SYS_STATUS` / `BATTERY_STATUS` validity before and after LoRa bridge insertion.
+- GCS reconnect-loop regression test: confirm `recoveryScanCount` does not increase during normal SF7 connect, parameter sync, or setup traffic unless packets are absent beyond the configured link-loss window.

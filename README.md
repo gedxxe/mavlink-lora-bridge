@@ -9,54 +9,6 @@ The bridge is MAVLink-aware by design. It is not a transparent serial modem. Thi
 
 No source file uses the old `clean_` prefix.
 
-# Changelog
-
-## 2026-06-09
-
-### Changed
-
-- Removed the `clean_` prefix from all source filenames.
-- Split the project into two Arduino sketch folders:
-  - `firmware/GCS_TurboFast`
-  - `firmware/UAV_TurboFast`
-- Kept shared protocol, link, and MAVLink setup policy headers inside each sketch `src/common` folder for Arduino IDE compatibility.
-- Updated include paths to use the new structure.
-- Replaced stale README content with current build, structure, and operating policy documentation.
-- Added `BridgeMavlinkPolicy.h` to centralize MAVLink compatibility fallbacks, ArduPilot setup command IDs, and setup parameter classifiers.
-- Moved `LINK_MODE_*` definitions into `LinkProfile.h`.
-- Removed redundant local packet-type, LoRa PHY CRC/header, compact-command length, MAVLink command, and link-mode definitions from the sketches.
-- Replaced duplicated setup parameter and calibration command classifier bodies with shared policy calls.
-- Moved async parameter retry timing and parameter-bulk fill-window policy into `LinkProfile.h`.
-- Updated SF7 Turbo parameter sync policy to use shorter Pixhawk-response retry and a larger bounded bulk prefetch window.
-
-### Fixed
-
-- Fixed GCS compile failure caused by `BridgeMavlinkPolicy.h` defining `MAVLINK_COMM_2` before MAVLink's own `mavlink_channel_t` enum was parsed. The policy header now includes `MAVLink_ardupilotmega.h` first and no longer defines `MAVLINK_COMM_*` macro fallbacks.
-- Fixed Arduino IDE include failure by changing sketch includes to local `src/common/...` paths and adding matching `src/common` header copies to both sketch folders.
-- Fixed source/include mismatch where sketches included names such as `TelemetryProtoFix.h` but the files were still named `clean_TelemetryProtoFix.h`.
-- Closed the high-SF get-parameter leak:
-  - GCS now blocks parameter get traffic before a valid beacon lock.
-  - GCS blocks all parameter get requests at SF10-SF12.
-  - UAV blocks all parameter get requests at SF10-SF12.
-  - UAV drops stale/non-write-ack `PARAM_VALUE` / `PARAM_EXT_VALUE` leakage at SF10-SF12.
-- Fixed battery telemetry merging so MAVLink unknown values do not overwrite the last valid voltage/current/remaining percentage.
-- Forwarded raw `BATTERY_STATUS` through the GCS re-encoder when it is received from the UAV side.
-- Prevented Mission Planner compass/setup parameter reads from starting full parameter sync.
-- Reduced repeated calibration-mode blocking by running Pixhawk stream interval reconfiguration only on calibration-mode entry.
-- Removed unused local `RADIOLIB_ERR_UNKNOWN`, `paramIdStartsWith()`, and `paramIdEquals()` definitions.
-- Removed the unused third shared-header copy under `firmware/common`; GCS and UAV now retain only the Arduino-required `src/common` copies.
-- Removed stale sketch-local `PARAM_BULK_FILL_GRACE_SF*` definitions that duplicated obsolete SF timing values.
-- Removed stale sketch-local `PARAM_SYNC_NO_VALUE_EXIT_MS_*`, `PARAM_SYNC_LINK_STALL_MS_*`, and unused telemetry ACK-timeout macros that were already superseded by `LinkProfile.h` functions.
-- Added explicit prototypes for new UAV parameter-sync policy helpers so the sketch is less dependent on Arduino auto-prototype generation.
-
-### Not Yet Validated On Hardware
-
-- Mission Planner behavior at SF7, SF8, and SF9 still needs bench validation with real GCS/UAV hardware.
-- SF10-SF12 monitoring mode needs runtime confirmation that telemetry cadence remains stable while Mission Planner attempts auto parameter reads.
-- Compass calibration needs bench validation that `MAG_CAL_PROGRESS`, `MAG_CAL_REPORT`, `COMMAND_ACK`, and setup parameter reads update Mission Planner continuously.
-- Accel, level, and simple accel calibration need bench validation that Mission Planner receives real ACK/status and advances each prompt once.
-
-
 ## Repository Structure
 
 ```text
@@ -83,12 +35,17 @@ mavlink-lora-bridge/
 |           |-- LinkProfile.h
 |           `-- TelemetryProtoFix.h
 |-- docs/
+|   |-- AI_ENGINEERING_NOTES.md
+|   |-- AUDIT_REPORT.md
+|   |-- CHANGELOG.md
 |   |-- CONFIGURATION.md
 |   |-- KNOWN_ISSUES.md
 |   `-- SF_LINK_POLICY.md
 |-- LICENSE
 `-- README.md
 ```
+
+The two `src/common` folders are intentionally duplicated because Arduino IDE builds each sketch from its own sketch directory. Parent-directory includes were already shown to be fragile in this project. The removed `firmware/common` folder was a third copy that was not used by either sketch build path.
 
 The two common header sets must remain byte-identical:
 
@@ -126,123 +83,253 @@ Arduino-local includes must remain in this form:
 
 Do not use absolute includes such as `/common/TelemetryProtoFix.h`, and do not rely on parent-directory includes such as `../common/...`.
 
-## System Model
+## System Architecture
 
-The link is modeled as a half-duplex LoRa channel carrying multiple MAVLink-derived traffic classes:
+The bridge is organized as two independent Arduino sketches joined by a fixed over-the-air protocol. Each sketch owns its local serial interface, radio driver, MAVLink parsing/re-encoding, queueing, and mode state. The common headers define only shared packet layouts, link policy, and MAVLink command classification.
+
+```mermaid
+flowchart LR
+  MP["Mission Planner"] -->|"MAVLink serial"| GCS_UART["GCS UART"]
+  GCS_UART --> GCS_PROTO["GCS MAVLink parser and scheduler"]
+  GCS_PROTO --> GCS_RADIO["SX1278 LoRa GCS"]
+  GCS_RADIO <-->|"Half-duplex LoRa packets"| UAV_RADIO["SX1278 LoRa UAV"]
+  UAV_RADIO --> UAV_PROTO["UAV scheduler and MAVLink proxy"]
+  UAV_PROTO --> PIX_UART["Pixhawk UART"]
+  PIX_UART <-->|"MAVLink ArduPilotMega"| FC["ArduPilot flight controller"]
+```
+
+Traffic classes are intentionally separated:
+
+| Layer | Main files | Responsibility |
+| --- | --- | --- |
+| RF/PHY | `GCSRadioHelpers.h`, `UAVRadioHelpers.h`, `LinkProfile.h` | SF/TP policy, RX timeout, ACK timing, scanning, and locked-link recovery. |
+| OTA protocol | `TelemetryProtoFix.h` | Packed packet structures, CRC/auth tag, compact telemetry, raw MAVLink, parameter bulk, ACK, and config packets. |
+| MAVLink policy | `BridgeMavlinkPolicy.h` | Mission Planner setup command classification, calibration command classification, and flight-action prioritization. |
+| Telemetry | `BeaconFillHelpers.h`, `BeaconDecodeHelpers.h` | UAV compact beacon generation and GCS reconstruction of selected MAVLink messages. |
+| Parameter sync | `UAVParamQueue.h`, GCS/UAV main sketches | Indexed `PARAM_REQUEST_READ` proxy and bounded `PARAM_BULK` transport. |
+| Calibration/setup | `GCCalibHelpers.h`, `UAVCalibHelpers.h` | Setup-mode hold, compass progress forwarding, ACK/status prioritization. |
+
+The link is modeled as a half-duplex LoRa channel carrying:
 
 - compact periodic telemetry beacons;
-- high-priority raw MAVLink command/ACK/status packets;
+- high-priority raw MAVLink command, ACK, and status packets;
 - compact command packets;
 - bounded parameter bulk packets;
-- configuration proposal/acknowledgement packets.
+- RF configuration proposal/acknowledgement packets.
 
-The bridge schedules these classes because LoRa time-on-air grows rapidly with spreading factor. A MAVLink parameter download that is acceptable on USB or SiK radio can starve flight command feedback and telemetry freshness on SF10-SF12.
+The scheduler exists because LoRa time-on-air grows rapidly with spreading factor. A MAVLink parameter transfer that is acceptable on USB can starve flight command feedback and telemetry freshness on SF10-SF12.
 
-## Fundamental LoRa Timing
+## Mathematical Model
+
+This section defines the measurement model used to reason about throughput, latency, packet loss, and energy. The equations are engineering models for analysis and test planning. They do not replace RF bench measurement because SX1278 module layout, antenna matching, local interference, MCU scheduling, and Mission Planner retry behavior affect the final result.
+
+### LoRa Time-On-Air
 
 Let:
 
-- `SF` be spreading factor, normally 7 to 12 on SX1278 LoRa.
-- `BW` be bandwidth in Hz.
-- `CR` be the coding-rate denominator used in the Semtech payload-symbol expression, commonly 5 to 8 for 4/5 to 4/8.
-- `PL` be payload length in bytes.
-- `CRC` be 1 when payload CRC is enabled, otherwise 0.
-- `IH` be 1 for implicit header, 0 for explicit header.
-- `DE` be low-data-rate optimization, typically enabled when symbol duration is long.
-- `Npreamble` be configured preamble length in symbols.
+- $$SF \in \{7,8,9,10,11,12\}$$ be the LoRa spreading factor.
+- $$BW$$ be RF bandwidth in Hz.
+- $$CR_{den} \in \{5,6,7,8\}$$ be the coding-rate denominator for LoRa coding rate $$4/CR_{den}$$.
+- $$PL$$ be PHY payload length in bytes.
+- $$CRC \in \{0,1\}$$ indicate whether LoRa PHY CRC is enabled.
+- $$IH \in \{0,1\}$$ indicate implicit header mode, where $$IH=0$$ is explicit header.
+- $$DE \in \{0,1\}$$ indicate low-data-rate optimization.
+- $$N_{pre}$$ be configured preamble length in symbols.
 
-Symbol duration:
-
-$$
-T_sym = (2^SF) / BW
-$$
-
-Preamble duration:
+The symbol duration is:
 
 $$
-T_preamble = (Npreamble + 4.25) * T_sym
+T_{sym} = \frac{2^{SF}}{BW}
 $$
 
-Payload symbol count, following the Semtech SX1276/77/78/79 LoRa packet model:
+The preamble duration is:
 
 $$
-N_payload = 8 + max(
-  ceil((8*PL - 4*SF + 28 + 16*CRC - 20*IH) / (4*(SF - 2*DE))) * CR,
-  0
-)
+T_{pre} = \left(N_{pre} + 4.25\right)T_{sym}
 $$
 
-Payload duration:
+The payload symbol count used by the firmware estimator is:
 
 $$
-T_payload = N_payload * T_sym
+N_{pl} = 8 + \max\left(
+\left\lceil
+\frac{8PL - 4SF + 28 + 16CRC - 20IH}
+{4\left(SF - 2DE\right)}
+\right\rceil CR_{den},
+0
+\right)
 $$
 
-Packet time-on-air:
+The payload duration and packet time-on-air are:
 
 $$
-T_packet = T_preamble + T_payload
+T_{pl} = N_{pl}T_{sym}
 $$
 
-The important engineering consequence is exponential airtime growth with `SF`, because $T_sym$ is proportional to $2^SF$. For a fixed packet size and bandwidth, moving from SF7 to SF12 increases symbol duration by a factor of:
-
 $$
-2^(12 - 7) = 32
+T_{pkt} = T_{pre} + T_{pl}
 $$
 
-This does not mean every packet is exactly 32 times longer because payload symbol count also changes, but it correctly captures the dominant scaling.
-
-Nominal LoRa physical-layer bit rate can be approximated as:
+The dominant scaling term is $$2^{SF}$$. For fixed bandwidth, moving from SF7 to SF12 increases symbol duration by:
 
 $$
-R_b = SF * BW * (4 / CR) / (2^SF)
+\frac{T_{sym,SF12}}{T_{sym,SF7}} =
+\frac{2^{12}/BW}{2^7/BW} =
+2^{5} =
+32
 $$
 
-This is a PHY approximation. It does not include preamble, header, CRC, half-duplex guard time, retransmission, or queueing delay.
+Payload symbol count also changes with $$SF$$, so packet airtime is not exactly multiplied by 32 for every packet size. The equation is still the correct first-order explanation for why SF10-SF12 are treated as monitoring modes rather than setup/parameter-transfer modes.
 
-## Airtime Utilization And Scheduling
-
-For a periodic traffic class `i`, define:
-
-- `T_i` as packet airtime.
-- `G_i` as guard/listen/turnaround overhead.
-- `P_i` as period.
-
-Approximate channel utilization:
+The nominal uncoded PHY bit-rate approximation is:
 
 $$
-U = sum((T_i + G_i) / P_i)
+R_b =
+\frac{SF \cdot BW \cdot \left(4/CR_{den}\right)}
+{2^{SF}}
 $$
 
-The link should be operated with margin:
+The firmware reports this in kbit/s as:
 
 $$
-U < U_max
+R_{b,kbps} =
+\frac{SF \cdot BW \cdot \left(4/CR_{den}\right)}
+{2^{SF}\cdot 1000}
 $$
 
-where $U_max$ must be below 1.0 for a real system because LoRa reception windows, MCU scheduling jitter, retransmission, Mission Planner retries, and ArduPilot stream bursts consume residual airtime. The exact margin must be validated on hardware; it cannot be proven from source code alone.
+This excludes preamble, header, CRC, guard time, RX windows, retransmission, queueing, and serial-port delay.
 
-For packet delivery ratio:
+### Channel Utilization
 
-$$
-PDR = N_rx_valid / N_tx
-$$
+For each traffic class $$i$$:
 
-For one-way or command-to-feedback latency:
+- $$T_i$$ is LoRa time-on-air.
+- $$G_i$$ is turnaround, guard, and listen overhead.
+- $$P_i$$ is the intended emission period.
+- $$A_i$$ is the expected retransmission multiplier, where $$A_i \ge 1$$.
 
-$$
-L = t_feedback_received - t_command_sent
-$$
-
-For transmit energy:
+Approximate half-duplex channel utilization is:
 
 $$
-E_tx = V_supply * I_tx(TP) * T_packet
+U =
+\sum_{i=1}^{n}
+\frac{A_i\left(T_i + G_i\right)}
+{P_i}
 $$
 
-where $I_tx(TP)$ depends on the module, PA path, supply voltage, board layout, and configured transmit power. The helper in `TelemetryProtoFix.h` is an estimate, not a substitute for current measurement.
+The operating condition is:
 
-## MAVLink Traffic Implications
+$$
+U < U_{max}
+$$
+
+In a robust field system, $$U_{max}$$ must be lower than 1.0 because Mission Planner retries, ArduPilot stream bursts, radio turnaround, and MCU jitter consume the residual budget. A practical test campaign should estimate margin as:
+
+$$
+M_U = 1 - U
+$$
+
+and reject configurations where $$M_U$$ is small during parameter sync or calibration.
+
+### Packet Delivery And Loss
+
+Let $$N_{tx}$$ be transmitted packets and $$N_{rx,valid}$$ be packets received with valid length, protocol version, authentication tag, and CRC. Packet delivery ratio is:
+
+$$
+PDR =
+\frac{N_{rx,valid}}{N_{tx}}
+$$
+
+Packet loss ratio is:
+
+$$
+PLR =
+1 - PDR =
+\frac{N_{tx} - N_{rx,valid}}{N_{tx}}
+$$
+
+For beacon counter windows, if $$C_k$$ and $$C_{k-1}$$ are consecutive accepted UAV packet counters:
+
+$$
+N_{expected,k} =
+\max\left(C_k - C_{k-1}, 1\right)
+$$
+
+Windowed PDR over $$m$$ samples is:
+
+$$
+PDR_{win} =
+\frac{\sum_{k=1}^{m} N_{rx,k}}
+{\sum_{k=1}^{m} N_{expected,k}}
+$$
+
+The GCS metrics stream uses this class of counter-window estimate for short-term link quality.
+
+### Latency
+
+For command-to-feedback timing:
+
+$$
+L_{cmd} =
+t_{feedback,rx} - t_{cmd,tx}
+$$
+
+For ACK-based half-round-trip estimates carried in telemetry:
+
+$$
+L_{halfRTT} =
+\frac{t_{ack,rx} - t_{pkt,tx}}{2}
+$$
+
+For a queued traffic class, observed latency includes radio airtime, queue wait, serial wait, and flight-controller processing:
+
+$$
+L_{obs} =
+T_{queue} + T_{pkt} + T_{rxwin} + T_{serial} + T_{FC}
+$$
+
+The bridge cannot infer $$T_{FC}$$ from LoRa metrics alone. Hardware logs must separate RF delay from ArduPilot command processing delay.
+
+### Energy Model
+
+For a transmit power setting $$TP$$:
+
+$$
+E_{tx} =
+V_{supply} \cdot I_{tx}(TP) \cdot T_{pkt}
+$$
+
+If $$T_{pkt}$$ is measured in milliseconds and $$I_{tx}$$ is in amperes, then energy in millijoules is:
+
+$$
+E_{tx,mJ} =
+V_{supply} \cdot I_{tx}(TP) \cdot
+\frac{T_{pkt,ms}}{1000}
+\cdot 1000
+$$
+
+The helper in `TelemetryProtoFix.h` uses an estimated piecewise current model:
+
+$$
+I_{tx}(TP) =
+\begin{cases}
+29\ \mathrm{mA}, & TP \le 10\ \mathrm{dBm}\\
+45\ \mathrm{mA}, & 10 < TP \le 12\ \mathrm{dBm}\\
+90\ \mathrm{mA}, & 12 < TP \le 14\ \mathrm{dBm}\\
+120\ \mathrm{mA}, & TP > 14\ \mathrm{dBm}
+\end{cases}
+$$
+
+Energy per successfully delivered packet can be estimated as:
+
+$$
+E_{delivered} =
+\frac{E_{tx}}{PDR}
+$$
+
+This is undefined when $$PDR = 0$$ and must be interpreted only over a measured packet window.
+
+### Parameter Sync Model
 
 MAVLink parameter get operations are bulk operations:
 
@@ -251,13 +338,78 @@ MAVLink parameter get operations are bulk operations:
 - `PARAM_SET` expects a `PARAM_VALUE` acknowledgement after the set attempt.
 - Extended parameters follow the same request/response pattern with `PARAM_EXT_*`.
 
-If the number of parameters is $N_param$ and the average encoded response packet airtime is $T_param$, the lower-bound airtime for a full parameter list is:
+If ArduPilot exposes $$N_{param}$$ parameters and a transparent link forwards every parameter individually, the lower-bound airtime is:
 
 $$
-T_param_list >= N_param * T_param
+T_{param,list}
+\ge
+N_{param} \cdot T_{param}
 $$
 
-This lower bound excludes half-duplex ACK slots, retries, queueing delay, Mission Planner gap-fill reads, and ArduPilot pacing. Therefore full parameter sync is allowed only on SF7-SF9 in this firmware.
+The bridge does not forward `PARAM_REQUEST_LIST` transparently. The UAV proxies a full sync as indexed `PARAM_REQUEST_READ` requests and packs received `PARAM_VALUE` records into `PARAM_BULK` packets.
+
+Let:
+
+- $$R_{bulk}(SF)$$ be the maximum compact parameter records per `PARAM_BULK`.
+- $$N_{bulk}$$ be the required number of bulk packets.
+- $$T_{bulk}(SF, PL)$$ be time-on-air for one bulk packet.
+- $$T_{ack}(SF)$$ be acknowledgement/listen-slot time.
+- $$N_{retry}$$ be retry count caused by RF loss or missing Pixhawk response.
+- $$T_{retry}(SF)$$ be the retry interval policy.
+
+The minimum number of bulk packets is:
+
+$$
+N_{bulk}
+=
+\left\lceil
+\frac{N_{param}}{R_{bulk}(SF)}
+\right\rceil
+$$
+
+A practical lower-bound sync model is:
+
+$$
+T_{sync}
+\ge
+N_{bulk}
+\left(T_{bulk}(SF, PL) + T_{ack}(SF)\right)
++
+N_{retry}T_{retry}(SF)
+$$
+
+An observed sync duration can be decomposed as:
+
+$$
+T_{sync,obs}
+=
+T_{sync}
++
+T_{MP,gapfill}
++
+T_{AP,sched}
++
+T_{serial}
++
+T_{queue}
+$$
+
+where $$T_{MP,gapfill}$$ covers Mission Planner gap-fill reads, $$T_{AP,sched}$$ covers ArduPilot response scheduling, $$T_{serial}$$ covers UART transport, and $$T_{queue}$$ covers local bridge queue wait.
+
+The current SF policy for parameter sync is:
+
+| Function | SF7 | SF8 | SF9 | Purpose |
+| --- | --- | --- | --- | --- |
+| `linkParamRequestRetryMs()` | 650 ms | 900 ms | 1200 ms | Retry a silent Pixhawk indexed read without flooding UART. |
+| `linkParamBulkFillWindow()` | 5 | 4 | 3 | Bound how many bulk packets may wait while polling continues. |
+| `linkParamBulkFillGraceMs()` | 80 ms | 130 ms | 190 ms | Release a partially filled bulk if no newer parameter arrives. |
+| `linkParamBulkRecords()` | max records | up to 8 | up to 6 | Reduce slow-SF packet airtime and ACK risk. |
+
+SF10-SF12 remain monitoring-only and are not valid modes for full Mission Planner parameter download.
+
+## MAVLink Traffic Implications
+
+Full parameter synchronization is allowed only on SF7-SF9 because the mathematical lower bound in the parameter-sync model excludes real overhead such as ACK slots, queueing, Mission Planner gap-fill reads, and ArduPilot pacing. SF10-SF12 are intentionally reserved for monitoring and critical command paths.
 
 The implemented SF policy is:
 
@@ -269,34 +421,6 @@ The implemented SF policy is:
 | Monitoring | SF10-SF12 | Critical telemetry and flight commands | Blocked |
 
 At SF10-SF12, get-parameter traffic is blocked at both the GCS entry point and the UAV receive path. `PARAM_SET` remains allowed because MAVLink uses `PARAM_VALUE` as the acknowledgement for a write operation.
-
-## Parameter Sync Implementation
-
-The UAV node proxies a Mission Planner full parameter sync as indexed `PARAM_REQUEST_READ` requests to ArduPilot rather than forwarding `PARAM_REQUEST_LIST` transparently. The proxy keeps one outstanding Pixhawk request per parameter index and packs received `PARAM_VALUE` records into bounded `PARAM_BULK` LoRa packets. This is a reliability tradeoff: it avoids unbounded UART-to-LoRa burst amplification while allowing the LoRa transmit queue to stay filled.
-
-If:
-
-- `N_param` is the parameter count reported by ArduPilot;
-- `R_bulk(SF)` is the maximum records packed in one `PARAM_BULK`;
-- `T_bulk(SF, PL)` is the LoRa airtime of a packed bulk packet;
-- `T_ack(SF)` is the acknowledgement/listen slot time;
-- `N_retry` is the number of RF or Pixhawk request retries;
-
-then a practical lower-bound model is:
-
-$$
-N_bulk >= ceil(N_param / R_bulk(SF))
-T_sync >= N_bulk * (T_bulk(SF, PL) + T_ack(SF)) + N_retry * T_retry(SF)
-$$
-
-This is still optimistic because it excludes Mission Planner gap-fill reads, ArduPilot scheduling jitter, serial buffering, and RF retransmission. The current SF7 optimization keeps the RF payload format unchanged and only changes the profile policy:
-
-- `linkParamRequestRetryMs(SF7) = 650 ms`;
-- `linkParamBulkFillWindow(SF7) = 5 queued bulk packets`;
-- `linkParamBulkFillGraceMs(SF7) = 80 ms`;
-- `linkParamBulkRecords(SF7) = PARAM_BULK_MAX_RECORDS`.
-
-SF8 and SF9 remain allowed but intentionally slower because airtime increases with SF. SF10-SF12 remain monitoring-only and are not valid modes for full Mission Planner parameter download.
 
 ## Battery Telemetry Policy
 
@@ -356,6 +480,32 @@ Removed in the current cleanup pass:
 - stale sketch-local `PARAM_BULK_FILL_GRACE_SF*` constants;
 - sketch-local async parameter retry and bulk fill-window constants now represented by `LinkProfile.h`.
 
+Retained intentionally:
+
+- one `src/common` header set under GCS;
+- one `src/common` header set under UAV.
+
+This retained duplication is an Arduino build-layout constraint, not an independent protocol fork. Static checks compare the two header sets by hash.
+
+## Validation Status
+
+Static checks performed in this environment:
+
+- quoted relative includes resolve;
+- GCS and UAV `src/common` headers are byte-identical;
+- GCS and UAV sketch preprocessor conditional stacks are balanced;
+- no `clean_` source files remain;
+- no targeted duplicate command/link/protocol macro definitions remain in the main sketches.
+- `LinkProfile.h` policy copies were kept byte-identical after the SF7 parameter-sync optimization.
+- GCS locked-SF recovery scan now waits beyond the Mission Planner link-loss window before abandoning a valid lock, reducing false reconnect loops during parameter sync/setup traffic.
+
+Not yet performed in this environment:
+
+- Arduino compile, because `arduino-cli`, `arduino`, and `pio` are not available in PATH;
+- Mission Planner bench test at SF7/SF8/SF9;
+- high-SF negative test proving parameter get is blocked while telemetry remains live;
+- hardware measurement of command-to-ACK latency and PDR.
+
 ## Current Problem Audit Status
 
 The following conclusions are based on source-level audit only, not a bench log:
@@ -365,6 +515,7 @@ The following conclusions are based on source-level audit only, not a bench log:
 | SF7 full parameter sync takes about 3 min 50 s; target is 2 min | Still potentially exists until hardware timing is measured. SF7 retry and bulk fill-window policy were optimized without changing OTA structs. |
 | SF8-SF9 parameter sync is much slower | Expected from LoRa airtime scaling; still allowed, but not expected to match SF7. |
 | Normal telemetry works | Code path remains intact; compact telemetry is still the primary normal-mode traffic. |
+| GCS connects for several dozen packets, disconnects, then scans SF repeatedly | Targeted fix applied: locked recovery scanning is delayed until the link-loss window plus guard time, so one delayed beacon during parameter/setup traffic should not force SF scanning. |
 | Accel/Level/Simple Accel calibration fails | Potentially exists until Mission Planner bench validation. Setup commands and accel calibration vehicle-position command are prioritized and not duplicated blindly. |
 | Compass calibration progress/IDs fail to update | Potentially exists until bench validation. `MAG_CAL_PROGRESS`, `MAG_CAL_REPORT`, `COMMAND_ACK`, `STATUSTEXT`, and setup parameter reads are prioritized at SF7-SF9. |
 | Battery voltage/current/remaining not shown | Bridge-side sentinel handling is fixed. Remaining risk is upstream ArduPilot battery monitor configuration or invalid MAVLink values from the FC/PDB path. |
@@ -393,112 +544,6 @@ The following conclusions are based on source-level audit only, not a bench log:
    - LoRa bridge must preserve the same voltage/current/remaining semantics;
    - if USB is invalid, correct ArduPilot battery monitor/PDB configuration before bridge debugging.
 9. Measure RSSI, SNR, PDR, and command-to-feedback latency for each SF.
-
-# Audit Report
-
-## 2026-06-09
-
-### Include And Build Layout
-
-Finding: Arduino IDE failed on `/common/TelemetryProtoFix.h` because parent or absolute include paths are not robust from a sketch build folder.
-
-Action:
-
-- GCS and UAV now include `src/common/TelemetryProtoFix.h` and `src/common/LinkProfile.h`.
-- GCS and UAV now include `src/common/BridgeMavlinkPolicy.h` for shared MAVLink command/setup policy.
-- Matching `src/common` copies were added under both sketch folders.
-- Static include resolution was checked.
-
-Follow-up finding: GCS compile failed when `BridgeMavlinkPolicy.h` was included before MAVLink headers. The policy header defined `MAVLINK_COMM_2` as a macro, but `MAVLINK_COMM_2` is an enum member in MAVLink's `mavlink_channel_t`. That macro expansion corrupted `mavlink_types.h` and then cascaded into `MAV_CMD_*` enum parse errors.
-
-Action:
-
-- `BridgeMavlinkPolicy.h` now includes `MAVLink_ardupilotmega.h` before compatibility aliases.
-- Removed the `MAVLINK_COMM_2` macro fallback from both GCS and UAV policy headers.
-- Kept GCS and UAV `BridgeMavlinkPolicy.h` copies byte-identical.
-
-### Redundancy And Structure
-
-Finding: GCS and UAV carried duplicate MAVLink command IDs, setup parameter prefix classifiers, calibration command classifiers, link-mode constants, packet type constants, and unused helper wrappers.
-
-Action:
-
-- Added `BridgeMavlinkPolicy.h` as the single source for MAVLink compatibility fallbacks, ArduPilot setup command aliases, setup parameter prefix classification, setup command classification, and flight-action command classification.
-- Moved `LINK_MODE_*` constants into `LinkProfile.h`.
-- Removed sketch-local redefinitions for `PKT_*`, `LORA_PHY_CRC_ENABLED`, `LORA_IMPLICIT_HEADER`, `COMPACT_CMD_MAX_LEN`, MAVLink command fallbacks, and link modes.
-- Removed unused `RADIOLIB_ERR_UNKNOWN`, `paramIdStartsWith()`, and `paramIdEquals()` sketch definitions.
-
-
-### Battery Telemetry
-
-Finding: `SYS_STATUS` and `BATTERY_STATUS` use explicit unknown sentinels. The old UAV parser copied `SYS_STATUS` fields directly, so `UINT16_MAX` voltage or `-1` current/remaining could overwrite previously valid telemetry.
-
-Action:
-
-- Added battery validity checks and merge logic on the UAV side.
-- Initialized battery fields to MAVLink unknown sentinel values.
-- Added GCS raw `BATTERY_STATUS` re-encoding so Mission Planner can receive the richer battery message when raw forwarding is available.
-
-Remaining limitation:
-
-- The compact beacon still carries only aggregate battery voltage/current/remaining via the SYS_STATUS-compatible fields. Per-cell detail is available only when raw `BATTERY_STATUS` is forwarded.
-
-### Compass Calibration
-
-Finding: Setup parameter reads were treated like full parameter sync, and calibration stream interval configuration could run repeatedly while Mission Planner polled setup pages.
-
-Action:
-
-- Setup parameter reads now enter calibration/config mode without starting full parameter sync.
-- UAV stream interval reconfiguration for calibration now runs only when entering calibration mode.
-- Existing high-priority forwarding for `COMMAND_ACK`, `STATUSTEXT`, `MAG_CAL_PROGRESS`, and `MAG_CAL_REPORT` remains in place.
-
-Remaining limitation:
-
-- SF10-SF12 intentionally remain monitoring/command modes and block get-parameter traffic. Full Mission Planner compass setup and parameter-heavy calibration should be tested at SF7-SF9.
-
-### Scheduling And Blocking
-
-Finding: The firmware still uses blocking RadioLib TX/RX calls, which is expected for the current half-duplex design. The highest-risk avoidable blocking was repeated stream reconfiguration during setup/calibration, now reduced.
-
-Remaining risks:
-
-- `radio.transmit()` and bounded `radio.receive(..., timeout)` still block the loop during RF slots.
-- Stream configuration functions still contain small `delay(8)` gaps, but they are now limited to mode transitions and setup/param transitions, not every calibration poll.
-- Hardware validation is still required for timing under SF7/SF8/SF9 and for high-SF negative tests.
-
-### SF7-SF9 Parameter Sync Follow-Up
-
-Finding: Source audit found stale SF-specific partial-bulk grace constants in `UAV_TurboFast.ino` that no longer controlled behavior because `paramBulkFillGraceForSF()` already delegates to `LinkProfile.h`. The async parameter retry interval and bulk prefetch window were also sketch-local rather than part of the shared SF policy.
-
-Action:
-
-- Removed stale `PARAM_BULK_FILL_GRACE_SF*` definitions from the UAV sketch.
-- Removed stale parameter-sync timeout macros that were no longer referenced after timeout policy moved to `LinkProfile.h`.
-- Added `linkParamRequestRetryMs()` to `LinkProfile.h`.
-- Added `linkParamBulkFillWindow()` to `LinkProfile.h`.
-- Updated the UAV async parameter poller to use the SF policy functions.
-- Kept OTA `PARAM_BULK` packet layout unchanged.
-
-Assessment:
-
-- SF7 full parameter sync was still a plausible bottleneck before this patch because a 1500 ms Pixhawk-response retry could create long stalls after a missed `PARAM_VALUE`.
-- The patch reduces retry delay at SF7 and allows a larger bounded RF-side prefetch window so the LoRa transmitter is less likely to idle while the Pixhawk UART is producing parameter values.
-- The reported 2 minute SF7 target cannot be claimed as met until measured with the actual parameter count, RSSI/SNR, retry count, and Mission Planner gap-fill behavior.
-- SF8 and SF9 remain expected to be slower than SF7 due to LoRa airtime scaling.
-
-### Six-Issue Source-Level Status
-
-| Item | Status |
-| --- | --- |
-| SF7 parameter sync approximately 3 min 50 s | Potentially still exists; code now has SF7 retry/window optimization, but hardware timing is required. |
-| SF8-SF9 very slow parameter sync | Expected risk; allowed by policy but constrained by airtime. |
-| Normal telemetry works | No code path regression found in static audit. |
-| Accel/Level/Simple Accel calibration failure | Potentially still exists until bench validation; setup commands are prioritized and `CMD_ACCELCAL_VEHICLE_POS` is classified, but not duplicated blindly. |
-| Compass calibration loading/ID update failure | Potentially still exists until bench validation; progress/report/ACK/status and setup parameter reads are prioritized at SF7-SF9. |
-| Battery voltage/current/remaining missing | Bridge-side invalid-sentinel handling is corrected; remaining risk is upstream FC/PDB/ArduPilot battery monitor configuration or invalid values emitted by the FC. |
-
-
 
 ## References
 

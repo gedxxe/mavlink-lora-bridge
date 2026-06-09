@@ -252,6 +252,14 @@ uint32_t paramReadBlockedHighSfCount = 0;
 #define GCS_LORA_INIT_FAIL_RESTART_MS     2000UL
 #define GCS_LORA_NO_PACKET_RECOVERY_MS    30000UL
 #define GCS_LORA_HARD_RECOVERY_MIN_GAP_MS 15000UL
+// Locked-link scan guard:
+// Do not abandon a valid SF lock after one delayed beacon. During Mission
+// Planner connect/full parameter sync, the UAV may be busy with PARAM_BULK,
+// ACK slots, or setup feedback and can stretch the inter-beacon gap. Scanning
+// too early breaks the GCS<->UAV downlink heartbeat path and can trigger
+// ArduPilot GCS failsafe. Recovery scan is still used after a real link-loss
+// window, and hard radio recovery remains governed separately.
+#define GCS_LOCKED_SCAN_EXTRA_GRACE_MS 2000UL
 
 // ================= MAVLink forwarding =================
 // Raw MAVLink packets from UAV are not rate-limited globally to prevent parameter values or calibration packets from being lost after acknowledgement.
@@ -3285,8 +3293,12 @@ void updateScheduledConfigGuard() {
 void updateRecoveryScanning() {
   unsigned long now = millis();
   if (scheduledConfig) return;  // Wait for SF/TP migration to complete or the guard timer to clear
-  unsigned long idleLimit = phyLocked ? linkIdleScanAfterForSF(activeSF) : 0UL;
-  if (phyLocked && now - lastPacketMs <= idleLimit) return;
+  if (phyLocked) {
+    unsigned long idleLimit = linkIdleScanAfterForSF(activeSF);
+    unsigned long lossAlignedLimit = mpLinkLossTimeoutForSF(activeSF) + GCS_LOCKED_SCAN_EXTRA_GRACE_MS;
+    if (idleLimit < lossAlignedLimit) idleLimit = lossAlignedLimit;
+    if (now - lastPacketMs <= idleLimit) return;
+  }
   if (now - lastScanMs < RECOVERY_SCAN_STEP_MS) return;
 #if PHY_TEST_LOCK_INITIAL_SF
   activeSF = DEFAULT_SF;
